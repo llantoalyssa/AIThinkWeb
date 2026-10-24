@@ -1,10 +1,11 @@
 "use server";
 
 import { createClient } from "@/server/supabase/server";
+
 export async function extractPdfText(fileUrl: string): Promise<string> {
   const supabase = await createClient();
 
-  const storagePath = fileUrl.replace(/^.*\/journals\
+  const storagePath = fileUrl.replace(/^.*\/journals\//, "");
   const { data: fileData, error: downloadError } = await supabase.storage
     .from("journals")
     .download(storagePath);
@@ -15,9 +16,9 @@ export async function extractPdfText(fileUrl: string): Promise<string> {
   }
 
   try {
-
     const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
     const bytes = new Uint8Array(await fileData.arrayBuffer());
+
     let standardFontDataUrl: string | undefined;
     try {
       const { createRequire } = await import("module");
@@ -25,7 +26,6 @@ export async function extractPdfText(fileUrl: string): Promise<string> {
       const pkgPath = require2.resolve("pdfjs-dist/package.json");
       const pdfjsRoot = pkgPath.replace(/package\.json$/, "");
       const fontsDir = pdfjsRoot + "standard_fonts/";
-
       const { existsSync } = await import("fs");
       if (existsSync(fontsDir)) {
         standardFontDataUrl = fontsDir;
@@ -57,6 +57,9 @@ export async function extractPdfText(fileUrl: string): Promise<string> {
 }
 
 import { getCurrentUser } from "./auth";
+
+// ── Types ──────────────────────────────────────────────────
+
 export type Journal = {
   id: string;
   departmentId: string;
@@ -70,7 +73,7 @@ export type Journal = {
 
 export type SaveJournalInput = {
   title: string;
-  authors: string;
+  authors: string; // comma-separated
   year: string;
   fileUrl: string;
   extractedText: string;
@@ -79,6 +82,7 @@ export type SaveJournalInput = {
 export type JournalActionResult<T> =
   | { success: true; data: T }
   | { success: false; error: string };
+
 const EMBEDDING_CORE_CHARS = 1_200;
 
 const SECTION_BOUNDARIES = [
@@ -96,6 +100,8 @@ const SECTION_BOUNDARIES = [
 function extractEmbeddingCore(title: string, fullText: string): string {
   const clean = fullText.replace(/\s+/g, " ").trim();
   if (!clean) return title.trim();
+
+  // Cut at the first section boundary so recommendations etc. are excluded.
   let cutAt = clean.length;
   for (const re of SECTION_BOUNDARIES) {
     const m = clean.match(re);
@@ -103,10 +109,15 @@ function extractEmbeddingCore(title: string, fullText: string): string {
       cutAt = m.index;
     }
   }
-  const core = clean.slice(0, Math.min(cutAt, EMBEDDING_CORE_CHARS)).trim();
 
+  // Keep the head (abstract + early intro) — bounded.
+  const core = clean.slice(0, Math.min(cutAt, EMBEDDING_CORE_CHARS)).trim();
+  // Fall back to the title if we ended up with almost nothing.
   return core.length >= 40 ? core : title.trim();
 }
+
+// ── Helper: build an SBERT embedding for a text string ─────
+
 async function embedJournalText(text: string): Promise<number[] | null> {
   try {
     const { pipeline } = await import("@xenova/transformers");
@@ -122,6 +133,7 @@ async function embedJournalText(text: string): Promise<number[] | null> {
     return null;
   }
 }
+
 export type JournalView = {
   id: string;
   title: string;
@@ -165,6 +177,9 @@ export async function getJournalById(
     },
   };
 }
+
+// ── Get all journals ───────────────────────────────────────
+
 export async function getAllJournals(): Promise<
   JournalActionResult<Journal[]>
 > {
@@ -203,6 +218,9 @@ export async function getAllJournals(): Promise<
 
   return { success: true, data: journals };
 }
+
+// ── Save journal (with pre-extracted text + AI metadata) ───
+
 export async function saveJournal(
   input: SaveJournalInput
 ): Promise<JournalActionResult<Journal>> {
@@ -224,6 +242,8 @@ export async function saveJournal(
   }
 
   const supabase = await createClient();
+
+  // ── Save to journals table ───────────────────────────────
   const { data: journal, error: insertError } = await supabase
     .from("journals")
     .insert({
@@ -242,6 +262,7 @@ export async function saveJournal(
     console.error("Error inserting journal:", insertError);
     return { success: false, error: "Failed to save journal." };
   }
+
   const coreText = extractEmbeddingCore(input.title, input.extractedText);
   if (coreText.trim().length > 0) {
     const embedding = await embedJournalText(coreText);
@@ -266,6 +287,8 @@ export async function saveJournal(
 
   return { success: true, data: result };
 }
+
+
 export type UpdateJournalInput = {
   title: string;
   authors: string;
@@ -289,6 +312,8 @@ export async function updateJournal(
   }
 
   const supabase = await createClient();
+
+  // Load existing text so we can recompute the embedding core on title change.
   const { data: existing, error: fetchErr } = await supabase
     .from("journals")
     .select("id, extracted_text, embedding_text")
@@ -318,6 +343,8 @@ export async function updateJournal(
     console.error("Error updating journal:", updateErr);
     return { success: false, error: "Failed to update journal." };
   }
+
+  // Re-embed from the (possibly new) title + abstract core.
   const coreText = extractEmbeddingCore(input.title.trim(), fullText);
   if (coreText.trim().length > 0) {
     const embedding = await embedJournalText(coreText);
@@ -343,6 +370,9 @@ export async function updateJournal(
     },
   };
 }
+
+// ── Log journal AI extraction cost ─────────────────────────
+
 export async function logJournalExtractCost(input: {
   promptTokens: number;
   completionTokens: number;
@@ -370,6 +400,9 @@ export async function logJournalExtractCost(input: {
     total_cost: totalCost,
   });
 }
+
+// ── Delete journal ─────────────────────────────────────────
+
 export async function deleteJournal(
   journalId: string
 ): Promise<JournalActionResult<null>> {
@@ -392,7 +425,7 @@ export async function deleteJournal(
     .single();
 
   if (journal) {
-    const filePath = (journal as any).file_url.replace(/^.*\/journals\
+    const filePath = (journal as any).file_url.replace(/^.*\/journals\//, "");
     await supabase.storage.from("journals").remove([filePath]);
   }
 
@@ -408,6 +441,8 @@ export async function deleteJournal(
 
   return { success: true, data: null };
 }
+
+
 export async function reembedJournals(): Promise<
   | { success: true; data: { reembedded: number; skipped: number } }
   | { success: false; error: string }
