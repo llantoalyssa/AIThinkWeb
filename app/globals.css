@@ -1,0 +1,284 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-geist-mono);
+  --font-heading: var(--font-sans);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+:root {
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.145 0 0);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.145 0 0);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.145 0 0);
+  --primary: oklch(0.205 0 0);
+  --primary-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.97 0 0);
+  --secondary-foreground: oklch(0.205 0 0);
+  --muted: oklch(0.97 0 0);
+  --muted-foreground: oklch(0.556 0 0);
+  --accent: oklch(0.97 0 0);
+  --accent-foreground: oklch(0.205 0 0);
+  --destructive: oklch(0.577 0.245 27.325);
+  --border: oklch(0.922 0 0);
+  --input: oklch(0.922 0 0);
+  --ring: oklch(0.708 0 0);
+  --chart-1: oklch(0.87 0 0);
+  --chart-2: oklch(0.556 0 0);
+  --chart-3: oklch(0.439 0 0);
+  --chart-4: oklch(0.371 0 0);
+  --chart-5: oklch(0.269 0 0);
+  --radius: 0.625rem;
+  --sidebar: oklch(0.985 0 0);
+  --sidebar-foreground: oklch(0.145 0 0);
+  --sidebar-primary: oklch(0.205 0 0);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.97 0 0);
+  --sidebar-accent-foreground: oklch(0.205 0 0);
+  --sidebar-border: oklch(0.922 0 0);
+  --sidebar-ring: oklch(0.708 0 0);
+}
+
+.dark {
+  --background: oklch(0.145 0 0);
+  --foreground: oklch(0.985 0 0);
+  --card: oklch(0.205 0 0);
+  --card-foreground: oklch(0.985 0 0);
+  --popover: oklch(0.205 0 0);
+  --popover-foreground: oklch(0.985 0 0);
+  --primary: oklch(0.922 0 0);
+  --primary-foreground: oklch(0.205 0 0);
+  --secondary: oklch(0.269 0 0);
+  --secondary-foreground: oklch(0.985 0 0);
+  --muted: oklch(0.269 0 0);
+  --muted-foreground: oklch(0.708 0 0);
+  --accent: oklch(0.269 0 0);
+  --accent-foreground: oklch(0.985 0 0);
+  --destructive: oklch(0.704 0.191 22.216);
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(1 0 0 / 15%);
+  --ring: oklch(0.556 0 0);
+  --chart-1: oklch(0.87 0 0);
+  --chart-2: oklch(0.556 0 0);
+  --chart-3: oklch(0.439 0 0);
+  --chart-4: oklch(0.371 0 0);
+  --chart-5: oklch(0.269 0 0);
+  --sidebar: oklch(0.205 0 0);
+  --sidebar-foreground: oklch(0.985 0 0);
+  --sidebar-primary: oklch(0.488 0.243 264.376);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.269 0 0);
+  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --sidebar-border: oklch(1 0 0 / 10%);
+  --sidebar-ring: oklch(0.556 0 0);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+  html {
+    @apply font-sans;
+  }
+}
+
+/* ── Rich text content (TipTap editor + HTML display) ────────────── */
+.rich-text-content {
+  font-size: 0.875rem;
+  line-height: 1.7;
+  color: #333;
+}
+
+.rich-text-content > *:first-child {
+  margin-top: 0;
+}
+
+.rich-text-content > *:last-child {
+  margin-bottom: 0;
+}
+
+/* Body copy reads like a paper: justified with a first-line indent, tight
+   bottom spacing so consecutive paragraphs stay visually grouped. The first
+   paragraph under a heading is flush; list items are never indented. */
+.rich-text-content p {
+  margin: 0 0 0.35em;
+  text-align: justify;
+  text-indent: 2em;
+  hyphens: auto;
+}
+
+.rich-text-content > p:first-child,
+.rich-text-content li p,
+.rich-text-content li > p {
+  text-indent: 0;
+}
+
+/* ACM numbered reference entries — hanging indent so the [n] markers line up
+   on the left edge, the way a reference list is typeset. */
+.rich-text-content p.doc-ref {
+  padding-left: 2.2em;
+  text-indent: -2.2em;
+  text-align: left;
+  margin: 0 0 0.45em;
+}
+
+.rich-text-content h2 {
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: #222;
+  margin: 1em 0 0.4em;
+}
+
+.rich-text-content h3 {
+  font-size: 1rem;
+  font-weight: 600;
+  color: #222;
+  margin: 0.9em 0 0.35em;
+}
+
+.rich-text-content ul {
+  list-style: disc outside;
+  padding-left: 1.8em;
+  margin: 0.35em 0 0.8em;
+}
+
+.rich-text-content ol {
+  list-style: decimal outside;
+  padding-left: 1.8em;
+  margin: 0.35em 0 0.8em;
+}
+
+.rich-text-content li {
+  margin: 0.25em 0;
+  text-align: justify;
+}
+
+.rich-text-content li > p {
+  margin: 0;
+}
+
+.rich-text-content blockquote {
+  border-left: 3px solid #8b1a1a;
+  padding-left: 0.9em;
+  margin: 0.6em 0;
+  color: #555;
+  font-style: italic;
+}
+
+.rich-text-content code {
+  background: #f3f4f6;
+  border: 1px solid #e5e7eb;
+  border-radius: 4px;
+  padding: 0.1em 0.35em;
+  font-size: 0.8em;
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+}
+
+.rich-text-content pre {
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 0.75em 1em;
+  overflow-x: auto;
+  margin: 0.6em 0;
+}
+
+.rich-text-content pre code {
+  background: transparent;
+  border: none;
+  padding: 0;
+}
+
+.rich-text-content a {
+  color: #1d4ed8;
+  text-decoration: underline;
+}
+
+.rich-text-content strong {
+  font-weight: 700;
+}
+
+.rich-text-content em {
+  font-style: italic;
+}
+
+.rich-text-content u {
+  text-decoration: underline;
+}
+
+.rich-text-content s {
+  text-decoration: line-through;
+}
+
+/* Placeholder styling for the editor (TipTap renders .is-empty p) */
+.rich-text-content p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
+  color: #9ca3af;
+  float: left;
+  height: 0;
+  pointer-events: none;
+}
+
+/* Transient amber flash overlay shown on the student's editable TAF
+   when they click an annotated comment. Appended to body, so the
+   keyframes must be global (not scoped to the component). */
+@keyframes annotTransitionPulse {
+  0%, 100% { transform: scale(1); }
+  50% { background: rgba(251, 191, 36, 0.75); transform: scale(1.03); }
+}
+
+/* ── Mobile safe-area clearance ──────────────────────────────────────
+   Used by the bottom nav on every dashboard page. Without it the nav sits
+   under the iPhone home indicator, so the last row of buttons can't be
+   tapped. Requires viewport-fit=cover (set in app/layout.tsx) — otherwise
+   env(safe-area-inset-*) reports 0. */
+.safe-area-bottom {
+  padding-bottom: env(safe-area-inset-bottom);
+}

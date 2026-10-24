@@ -1,0 +1,1095 @@
+"use client";
+
+import { useState, useEffect, useCallback, useRef } from "react";
+import { useRouter } from "next/navigation";
+import {
+  createTopicAbstract,
+  updateTopicAbstract,
+  getTopicAbstractById,
+  type CreateTAFInput,
+  type TAFResult,
+  type TopicAbstractForm,
+} from "@/server/actions/topic-abstracts";
+import {
+  analyzeTAF,
+  getTAFAnalysis,
+  listAnalysisVersions,
+  discardCancelledAnalysis,
+  type TAFAnalysisResult,
+  type AnalysisVersion,
+} from "@/server/actions/analyze-taf";
+import { addRecentTAF, updateRecentTAFStatus } from "@/server/actions/recents";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import RichTextEditor, { htmlToText } from "@/components/rich-text-editor";
+import { plainTextToHtml, htmlToPlainText } from "@/lib/html";
+import RichTextView from "@/components/rich-text-view";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import TAFAnalysisResults from "@/components/taf-analysis-results";
+import { toast } from "sonner";
+import {
+  Save,
+  Loader2,
+  ArrowLeft,
+  FileText,
+  Lightbulb,
+  Target,
+  BookOpen,
+  FlaskConical,
+  Quote,
+  GitCompareArrows,
+  BrainCircuit,
+  RefreshCw,
+  ExternalLink,
+  CheckCircle2,
+  Clock,
+  Eye,
+  AlertCircle,
+  X,
+} from "lucide-react";
+
+type Props = {
+  tafId?: string;
+  initialTaf?: TopicAbstractForm;
+  onBack: () => void;
+  onSaved: () => void;
+  disableAnalyze?: boolean;
+  submissionUrl?: string;
+  submissionStatus?: string;
+};
+
+type FormFields = {
+  proposedTitle: string;
+  background: string;
+  objectives: string;
+  literatureReview: string;
+  methodology: string;
+  referenceList: string;
+};
+
+const EMPTY_FIELDS: FormFields = {
+  proposedTitle: "",
+  background: "",
+  objectives: "",
+  literatureReview: "",
+  methodology: "",
+  referenceList: "",
+};
+
+const FIELD_LABELS: Record<keyof FormFields, string> = {
+  proposedTitle: "Proposed Title",
+  background: "Background of the Proposed Topic",
+  objectives: "General & Specific Objectives",
+  literatureReview: "Review of Related Literature",
+  methodology: "Methodology",
+  referenceList: "References",
+};
+
+const FIELD_ICONS: Record<keyof FormFields, React.ReactNode> = {
+  proposedTitle: <FileText className="h-4 w-4" />,
+  background: <Lightbulb className="h-4 w-4" />,
+  objectives: <Target className="h-4 w-4" />,
+  literatureReview: <BookOpen className="h-4 w-4" />,
+  methodology: <FlaskConical className="h-4 w-4" />,
+  referenceList: <Quote className="h-4 w-4" />,
+};
+
+const ANALYSIS_STEPS = [
+  "Loading TAF data…",
+  "Comparing with existing TAFs (SBERT)…",
+  "Searching Google Scholar…",
+  "Scoring external matches…",
+  "Running AI analysis (SDG, Gap, Recos)…",
+  "Generating report…",
+];
+function normalizeFields(input: Partial<FormFields> | null | undefined): FormFields {
+  return {
+    proposedTitle: input?.proposedTitle ?? "",
+    background: input?.background ?? "",
+    objectives: input?.objectives ?? "",
+    literatureReview: input?.literatureReview ?? "",
+    methodology: input?.methodology ?? "",
+    referenceList: input?.referenceList ?? "",
+  };
+}
+function fieldHasContent(value: string | undefined): boolean {
+  return !!htmlToText(value || "").trim();
+}
+function richFieldHasContent(f: FormFields): boolean {
+  return (
+    fieldHasContent(f.background) ||
+    fieldHasContent(f.objectives) ||
+    fieldHasContent(f.literatureReview) ||
+    fieldHasContent(f.methodology) ||
+    fieldHasContent(f.referenceList)
+  );
+}
+const MIN_FIELD_CHARS_DEFAULT = 1000;
+const MIN_FIELD_CHARS_BY_FIELD: Partial<Record<keyof FormFields, number>> = {
+  referenceList: 500,
+};
+const minForField = (k: keyof FormFields): number =>
+  MIN_FIELD_CHARS_BY_FIELD[k] ?? MIN_FIELD_CHARS_DEFAULT;
+
+export default function TopicAbstractFormEditor({ tafId, initialTaf, onBack, onSaved, disableAnalyze, submissionUrl, submissionStatus }: Props) {
+  const router = useRouter();
+  const initialTafRef = useRef(initialTaf);
+  const [fields, setFields] = useState<FormFields>(EMPTY_FIELDS);
+  const [loading, setLoading] = useState(!!tafId);
+  const [bootstrapped, setBootstrapped] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [analyzing, setAnalyzing] = useState(false);
+  const [analysisStep, setAnalysisStep] = useState(0);
+  const analyzeCancelRef = useRef(false);
+  const analysisRunIdRef = useRef(0);
+  const stepIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  function handleCancelAnalyze() {
+    analyzeCancelRef.current = true;
+
+    analysisRunIdRef.current += 1;
+    if (stepIntervalRef.current) {
+      clearInterval(stepIntervalRef.current);
+      stepIntervalRef.current = null;
+    }
+    setAnalyzing(false);
+    toast.info("Analysis cancelled.");
+  }
+  const [currentStatus, setCurrentStatus] = useState<string>("draft");
+  const [analysisResult, setAnalysisResult] = useState<TAFAnalysisResult | null>(null);
+  const [versions, setVersions] = useState<AnalysisVersion[]>([]);
+  const [activeVersion, setActiveVersion] = useState<number | undefined>(undefined);
+  const [diffField, setDiffField] = useState<keyof FormFields | null>(null);
+  const storageKey = tafId ? `aithink_taf_draft_${tafId}` : "aithink_taf_draft_new";
+  const autosaveTimer = useRef<number | null>(null);
+  const loadedRef = useRef(false);
+  const restoreNotifiedRef = useRef(false);
+  const pendingPayloadRef = useRef<string | null>(null);
+  const pendingKeyRef = useRef<string>(storageKey);
+  const persistedDraftRef = useRef<string | null>(null);
+  const settledRef = useRef(false);
+
+  useEffect(() => {
+    const t = window.setTimeout(() => {
+      settledRef.current = true;
+    }, 1200);
+    return () => window.clearTimeout(t);
+  }, []);
+  function getFieldDiff(
+    fieldKey: keyof FormFields,
+  ): { before: string; after: string } | null {
+    if (!analysisResult?.enhancement) return null;
+    const e = analysisResult.enhancement;
+    const snap = analysisResult.formFieldsSnapshot;
+
+    const before = snap?.[fieldKey] || "";
+    const after = (() => {
+      switch (fieldKey) {
+        case "proposedTitle":
+          return e.improvedTitle;
+        case "background":
+          return e.improvedBackground;
+        case "objectives":
+          return e.improvedObjectives;
+        case "methodology":
+          return e.improvedMethodology;
+        case "literatureReview":
+          return e.improvedLiteratureReview;
+        case "referenceList":
+          return e.improvedReferences;
+        default:
+          return "";
+      }
+    })();
+
+    if (!after || after === before) return null;
+    return { before, after };
+  }
+
+  const diffData = diffField ? getFieldDiff(diffField) : null;
+  const loadTAF = useCallback(async (id: string) => {
+    const preloaded = initialTafRef.current;
+    const result: TAFResult =
+      preloaded && preloaded.id === id
+        ? { success: true, data: preloaded }
+        : await getTopicAbstractById(id);
+    if (!result.success) {
+      toast.error(result.error);
+      setLoading(false);
+      setBootstrapped(true);
+      onBack();
+      return;
+    }
+
+    setFields({
+      proposedTitle: htmlToPlainText(result.data.proposedTitle),
+      background: plainTextToHtml(result.data.background),
+      objectives: plainTextToHtml(result.data.objectives),
+      literatureReview: plainTextToHtml(result.data.literatureReview),
+      methodology: plainTextToHtml(result.data.methodology),
+      referenceList: plainTextToHtml(result.data.referenceList),
+    });
+    try {
+      const draft = window.localStorage.getItem(storageKey);
+      if (draft) {
+        const parsed = JSON.parse(draft) as Partial<FormFields>;
+        if (parsed && typeof parsed === "object") {
+          const local = normalizeFields(parsed);
+          setFields((prev) =>
+            (Object.keys(local) as (keyof FormFields)[]).reduce<FormFields>(
+              (acc, key) => {
+                acc[key] =
+                  fieldHasContent(local[key]) || !fieldHasContent(prev[key])
+                    ? local[key]
+                    : prev[key];
+                return acc;
+              },
+              { ...prev },
+            ),
+          );
+          if (!restoreNotifiedRef.current) {
+            restoreNotifiedRef.current = true;
+            toast.info("Restored your unsaved draft.", {
+              description: "Your in-progress edits were recovered.",
+            });
+          }
+        }
+      }
+    } catch {
+
+    }
+
+    loadedRef.current = true;
+    setCurrentStatus(result.data.status);
+    if (result.data.status === "analyzed") {
+      const [verRes, analysis] = await Promise.all([
+        listAnalysisVersions(id),
+        getTAFAnalysis(id),
+      ]);
+      if (verRes.success) setVersions(verRes.versions);
+      if (analysis.success) {
+        setAnalysisResult(analysis.data);
+        setActiveVersion(analysis.data.versionNumber);
+      }
+    }
+    setBootstrapped(true);
+    setLoading(false);
+  }, [onBack, setLoading, storageKey]);
+
+  useEffect(() => {
+    if (!tafId) return;
+    const id = tafId;
+
+    loadTAF(id);
+  }, [tafId, loadTAF]);
+  const pageTopRef = useRef<HTMLButtonElement | null>(null);
+
+  const scrollResultsToTop = useCallback(() => {
+    const run = (instant: boolean) => {
+      const behavior: ScrollBehavior = instant ? "auto" : "smooth";
+      pageTopRef.current?.scrollIntoView({ behavior, block: "start" });
+
+      let el: HTMLElement | null = pageTopRef.current?.parentElement ?? null;
+      while (el) {
+        if (el.scrollHeight > el.clientHeight + 4) {
+          const oy = window.getComputedStyle(el).overflowY;
+          if (oy === "auto" || oy === "scroll") {
+            el.scrollTo({ top: 0, behavior });
+          }
+        }
+        el = el.parentElement;
+      }
+      window.scrollTo({ top: 0, behavior });
+    };
+    requestAnimationFrame(() => requestAnimationFrame(() => run(false)));
+    window.setTimeout(() => run(false), 150);
+    window.setTimeout(() => run(false), 400);
+    window.setTimeout(() => {
+      const y = window.scrollY || document.documentElement.scrollTop || 0;
+      if (y > 8) run(true);
+    }, 700);
+  }, []);
+
+  const prevAnalyzing = useRef(false);
+  useEffect(() => {
+    if (prevAnalyzing.current && !analyzing && analysisResult) {
+      scrollResultsToTop();
+    }
+    prevAnalyzing.current = analyzing;
+  }, [analyzing, analysisResult, scrollResultsToTop]);
+  useEffect(() => {
+    if (tafId) return;
+    loadedRef.current = true;
+    try {
+      const draft = window.localStorage.getItem(storageKey);
+      if (draft) {
+        const parsed = JSON.parse(draft) as Partial<FormFields>;
+        if (parsed && typeof parsed === "object") {
+
+          setFields(normalizeFields(parsed));
+          if (!restoreNotifiedRef.current) {
+            restoreNotifiedRef.current = true;
+            toast.info("Restored your unsaved draft.", {
+              description: "Your in-progress edits were recovered.",
+            });
+          }
+        }
+      }
+    } catch {
+
+    }
+    setBootstrapped(true);
+
+  }, [tafId]);
+  useEffect(() => {
+    if (!loadedRef.current) return;
+    const payload = JSON.stringify(fields);
+    if (persistedDraftRef.current !== null && payload === persistedDraftRef.current) {
+      return;
+    }
+    persistedDraftRef.current = null;
+    const blank =
+      !fields.proposedTitle.trim() &&
+      !htmlToText(fields.background).trim() &&
+      !htmlToText(fields.objectives).trim() &&
+      !htmlToText(fields.literatureReview).trim() &&
+      !htmlToText(fields.methodology).trim() &&
+      !htmlToText(fields.referenceList).trim();
+    if (blank) {
+      pendingPayloadRef.current = null;
+      try {
+        window.localStorage.removeItem(storageKey);
+      } catch {
+
+      }
+      return;
+    }
+    if (!settledRef.current && !richFieldHasContent(fields)) {
+      try {
+        const stored = window.localStorage.getItem(storageKey);
+        if (stored) {
+          const prev = normalizeFields(JSON.parse(stored) as Partial<FormFields>);
+          if (richFieldHasContent(prev)) {
+            pendingPayloadRef.current = null;
+            return;
+          }
+        }
+      } catch {
+
+      }
+    }
+    if (autosaveTimer.current) window.clearTimeout(autosaveTimer.current);
+
+    pendingPayloadRef.current = payload;
+    pendingKeyRef.current = storageKey;
+    autosaveTimer.current = window.setTimeout(() => {
+      try {
+        window.localStorage.setItem(storageKey, payload);
+      } catch {
+
+      }
+      pendingPayloadRef.current = null;
+    }, 600);
+    return () => {
+      if (autosaveTimer.current) window.clearTimeout(autosaveTimer.current);
+    };
+  }, [fields, storageKey]);
+  useEffect(() => {
+    return () => {
+      const payload = pendingPayloadRef.current;
+      if (!payload || !loadedRef.current) return;
+      try {
+        window.localStorage.setItem(pendingKeyRef.current, payload);
+      } catch {
+
+      }
+      pendingPayloadRef.current = null;
+    };
+  }, []);
+  function updateField(name: keyof FormFields, value: string) {
+    setFields((prev) => ({ ...prev, [name]: value }));
+  }
+  function fieldsUnderMinimum(): { label: string; length: number; min: number }[] {
+    const keys = (Object.keys(FIELD_LABELS) as Array<keyof FormFields>).filter(
+      (k) => k !== "proposedTitle",
+    );
+    const short: { label: string; length: number; min: number }[] = [];
+    for (const k of keys) {
+      const min = minForField(k);
+      const len = htmlToText(fields[k]).trim().length;
+      if (len < min) short.push({ label: FIELD_LABELS[k], length: len, min });
+    }
+    return short;
+  }
+
+  async function handleSave() {
+    const isEmptyTAF =
+      !fields.proposedTitle.trim() &&
+      !htmlToText(fields.background).trim() &&
+      !htmlToText(fields.objectives).trim() &&
+      !htmlToText(fields.literatureReview).trim() &&
+      !htmlToText(fields.methodology).trim() &&
+      !htmlToText(fields.referenceList).trim();
+
+    if (isEmptyTAF) {
+      toast.error("Nothing to save yet.", {
+        description:
+          "Enter at least one field (e.g. the Proposed Title) before saving a draft.",
+      });
+      return;
+    }
+
+    setSaving(true);
+    try {
+      if (tafId) {
+        const result = await updateTopicAbstract({ id: tafId, ...fields });
+        if (result.success) {
+
+          window.localStorage.removeItem(storageKey);
+          setCurrentStatus(result.data.status);
+          toast.success("Draft saved!", { description: "Your changes have been saved." });
+          onSaved();
+        } else {
+          toast.error(result.error);
+        }
+      } else {
+        const result = await createTopicAbstract(fields as CreateTAFInput);
+        if (result.success) {
+          window.localStorage.removeItem(storageKey);
+          addRecentTAF(result.data.id, result.data.proposedTitle || "Untitled", result.data.status);
+          toast.success("Topic Abstract created!", {
+            description: "You can now analyze it for similarity checking.",
+          });
+          onSaved();
+        } else {
+          toast.error(result.error);
+        }
+      }
+    } finally {
+      setSaving(false);
+    }
+  }
+  async function handleAnalyze() {
+    const titleText = fields.proposedTitle.trim();
+    const bgText = htmlToText(fields.background).trim();
+    const objText = htmlToText(fields.objectives).trim();
+    const litText = htmlToText(fields.literatureReview).trim();
+    const methodText = htmlToText(fields.methodology).trim();
+    const refText = htmlToText(fields.referenceList).trim();
+    if (!titleText) {
+      toast.error("Proposed Title is required before analysis.");
+      return;
+    }
+    if (titleText.length < 5) {
+      toast.error("Proposed Title is too short. Please enter a more descriptive title.");
+      return;
+    }
+    if (!bgText) {
+      toast.error("Background of the Proposed Topic is required before analysis.");
+      return;
+    }
+    if (bgText.length < 25) {
+      toast.error("Background of the Proposed Topic is too short. Please add more content.");
+      return;
+    }
+    if (!objText) {
+      toast.error("Objectives are required before analysis.");
+      return;
+    }
+    if (objText.length < 25) {
+      toast.error("Objectives are too short. Please add more detailed objectives.");
+      return;
+    }
+    if (!litText) {
+      toast.error("Review of Related Literature is required before analysis.");
+      return;
+    }
+    if (!methodText) {
+      toast.error("Methodology is required before analysis.");
+      return;
+    }
+    if (!refText) {
+      toast.error("Reference List is required before analysis.");
+      return;
+    }
+    const stillShort = fieldsUnderMinimum();
+    if (stillShort.length > 0) {
+      const detail = stillShort
+        .map((f) => `${f.label} (${f.length}/${f.min})`)
+        .join(", ");
+      toast.error("Some fields are still below the minimum length.", {
+        description: `Still short: ${detail}`,
+      });
+      return;
+    }
+
+    setAnalyzing(true);
+    setAnalysisStep(0);
+    analyzeCancelRef.current = false;
+    const myRun = ++analysisRunIdRef.current;
+
+    stepIntervalRef.current = setInterval(() => {
+      setAnalysisStep((prev) => Math.min(prev + 1, ANALYSIS_STEPS.length - 1));
+    }, 2500);
+    const stepInterval = stepIntervalRef.current;
+
+    try {
+
+      let targetId = tafId;
+      if (!targetId) {
+        const createResult = await createTopicAbstract(fields as CreateTAFInput);
+        if (!createResult.success) {
+          toast.error(createResult.error);
+          setAnalyzing(false);
+          clearInterval(stepInterval);
+          return;
+        }
+        targetId = createResult.data.id;
+        persistedDraftRef.current = JSON.stringify(fields);
+        try {
+          window.localStorage.removeItem("aithink_taf_draft_new");
+        } catch {
+
+        }
+        addRecentTAF(targetId, createResult.data.proposedTitle || "Untitled", "draft");
+        router.replace(
+          `/dashboard/student/${createResult.data.studentId}/taf/${targetId}/analyzing`,
+        );
+      }
+      if (tafId) {
+        await updateTopicAbstract({ id: tafId, ...fields });
+      }
+
+      const result = await analyzeTAF(targetId);
+      clearInterval(stepInterval);
+      stepIntervalRef.current = null;
+      if (analyzeCancelRef.current || myRun !== analysisRunIdRef.current) {
+        if (result.success) {
+          const discard = await discardCancelledAnalysis(
+            targetId,
+            result.data.versionNumber,
+          );
+          if (discard.success) {
+
+            setCurrentStatus("draft");
+            setAnalysisResult(null);
+            setVersions((prev) =>
+              prev.filter((v) => v.versionNumber !== result.data.versionNumber),
+            );
+          }
+        }
+        return;
+      }
+
+      if (result.success) {
+        setAnalysisResult(result.data);
+        setActiveVersion(result.data.versionNumber);
+        setCurrentStatus("analyzed");
+        const isLowSimilarity =
+          result.data.judgment === "low_similarity";
+        if (result.data.enhancement && !isLowSimilarity) {
+          const e = result.data.enhancement;
+          setFields((prev) => ({
+
+            proposedTitle: e.improvedTitle || prev.proposedTitle,
+            background: plainTextToHtml(e.improvedBackground || prev.background),
+            objectives: plainTextToHtml(e.improvedObjectives || prev.objectives),
+            literatureReview: plainTextToHtml(
+              e.improvedLiteratureReview || prev.literatureReview,
+            ),
+            methodology: plainTextToHtml(e.improvedMethodology || prev.methodology),
+            referenceList: plainTextToHtml(e.improvedReferences || prev.referenceList),
+          }));
+        }
+
+        await updateRecentTAFStatus(targetId, "analyzed");
+        const verRes = await listAnalysisVersions(targetId);
+        if (verRes.success) setVersions(verRes.versions);
+
+        toast.success("Analysis complete!", {
+          description: `Version ${result.data.versionNumber} created.`,
+        });
+        scrollResultsToTop();
+      } else {
+        toast.error("Analysis failed", {
+          description: result.error || "Something went wrong during analysis.",
+        });
+      }
+    } catch (err) {
+      clearInterval(stepInterval);
+      if (myRun === analysisRunIdRef.current && !analyzeCancelRef.current) {
+        toast.error("Analysis error", {
+          description: err instanceof Error ? err.message : "Unexpected error",
+        });
+      }
+    } finally {
+      if (myRun === analysisRunIdRef.current) {
+        setAnalyzing(false);
+      }
+    }
+  }
+  async function handleSelectVersion(version: number) {
+    if (!tafId) return;
+    const analysis = await getTAFAnalysis(tafId, version);
+    if (analysis.success) {
+      setAnalysisResult(analysis.data);
+      setActiveVersion(version);
+    }
+  }
+  const showAnalysisButton = currentStatus === "draft" && !disableAnalyze;
+  const showResults = analysisResult !== null;
+
+  const isLocked = !!disableAnalyze;
+  const MAX_ANALYSIS_VERSIONS = 5;
+  const latestVersion =
+    versions.length > 0
+      ? Math.max(...versions.map((v) => v.versionNumber))
+      : activeVersion || 0;
+  const analysisLimitReached = latestVersion >= MAX_ANALYSIS_VERSIONS;
+  const shortFields = fieldsUnderMinimum();
+  const belowMinimum = shortFields.length > 0;
+  const minimumBlocker = belowMinimum
+    ? `Some fields are still below the minimum length: ${shortFields
+        .map((f) => `${f.label} (${f.length}/${f.min})`)
+        .join(", ")}`
+    : undefined;
+  const baseline = analysisResult?.enhancement
+    ? {
+        proposedTitle: analysisResult.enhancement.improvedTitle,
+        background: analysisResult.enhancement.improvedBackground,
+        objectives: analysisResult.enhancement.improvedObjectives,
+        literatureReview: analysisResult.enhancement.improvedLiteratureReview,
+        methodology: analysisResult.enhancement.improvedMethodology,
+        referenceList: analysisResult.enhancement.improvedReferences,
+      }
+    : analysisResult?.formFieldsSnapshot;
+  const norm = (v?: string | null) => htmlToText(v || "").trim();
+  const hasChanges = showResults && !!baseline && (
+    norm(fields.proposedTitle) !== norm(baseline.proposedTitle) ||
+    norm(fields.background) !== norm(baseline.background) ||
+    norm(fields.objectives) !== norm(baseline.objectives) ||
+    norm(fields.literatureReview) !== norm(baseline.literatureReview) ||
+    norm(fields.methodology) !== norm(baseline.methodology) ||
+    norm(fields.referenceList) !== norm(baseline.referenceList)
+  );
+
+  const statusBadge = (() => {
+    const colors: Record<string, string> = {
+      draft: "bg-gray-100 text-gray-700 border-gray-300",
+      analyzed: "bg-indigo-50 text-indigo-700 border-indigo-300",
+      submitted: "bg-blue-50 text-blue-700 border-blue-300",
+      under_review: "bg-amber-50 text-amber-700 border-amber-300",
+      approved: "bg-green-50 text-green-700 border-green-300",
+      revisions_needed: "bg-red-50 text-red-700 border-red-300",
+    };
+    const labels: Record<string, string> = {
+      draft: "Draft",
+      analyzed: "Analyzed",
+      submitted: "Submitted",
+      under_review: "Under Review",
+      approved: "Approved",
+      revisions_needed: "Revisions Needed",
+    };
+    return (
+      <span
+        className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-medium ${
+          colors[currentStatus] || colors.draft
+        }`}
+      >
+        {labels[currentStatus] || currentStatus}
+      </span>
+    );
+  })();
+  if (loading || !bootstrapped) {
+    return (
+      <div className="flex items-center justify-center py-20">
+        <Loader2 className="h-8 w-8 animate-spin text-[#8B1A1A]" />
+      </div>
+    );
+  }
+  return (
+    <>
+      {
+
+}
+      <button
+        ref={pageTopRef}
+        onClick={onBack}
+        className="scroll-mt-16 flex items-center gap-2 text-sm text-gray-500 hover:text-[#8B1A1A] transition-colors mb-6 cursor-pointer"
+      >
+        <ArrowLeft className="h-4 w-4" />
+        Back to My Topic Abstracts
+      </button>
+
+      {}
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
+        <div>
+          <h1 className="text-xl sm:text-2xl font-bold text-[#333]">
+            {tafId ? "Edit Topic Abstract Form" : "New Topic Abstract Form"}
+          </h1>
+          <p className="text-sm text-gray-500 mt-1">
+            {showResults
+              ? "Your TAF has been analyzed. Review the results below."
+              : "Fill out the form below with your proposed research topic."}
+          </p>
+        </div>
+        {tafId && <div className="flex items-center gap-2">{statusBadge}</div>}
+      </div>
+
+      {}
+      {analysisLimitReached && (
+        <div className="mb-6 flex items-center gap-3 p-4 rounded-lg border border-amber-200 bg-amber-50">
+          <AlertCircle className="h-5 w-5 text-amber-600 shrink-0" />
+          <div className="flex-1">
+            <p className="text-sm font-medium text-amber-800">
+              Maximum analyses reached (V{latestVersion}/{MAX_ANALYSIS_VERSIONS})
+            </p>
+            <p className="text-xs text-amber-600">
+              This TAF has been analyzed {MAX_ANALYSIS_VERSIONS} times, which is
+              the maximum allowed. Re-analysis is disabled — you can still save
+              edits, or create a new TAF to run a fresh analysis.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {}
+      {disableAnalyze && (
+        <div className="mb-6 space-y-4">
+          <div className="flex items-center gap-3 p-4 rounded-lg border border-blue-200 bg-blue-50">
+            <FileText className="h-5 w-5 text-blue-600 shrink-0" />
+            <div className="flex-1">
+              <p className="text-sm font-medium text-blue-800">
+                This TAF has been submitted to an advisory group
+              </p>
+              <p className="text-xs text-blue-600">
+                Analysis and editing are disabled because this TAF is under review. Create a new TAF for further revisions.
+              </p>
+            </div>
+            {submissionUrl && (
+              <button
+                type="button"
+                onClick={() => router.push(submissionUrl)}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-blue-600 text-white hover:bg-blue-700 transition-colors shrink-0 cursor-pointer"
+              >
+                <ExternalLink className="h-3.5 w-3.5" />
+                View Submission
+              </button>
+            )}
+          </div>
+
+          {}
+          <Card>
+            <CardContent className="p-4">
+              <div className="flex items-center justify-center">
+                {[
+                  { key: 'pending', label: 'Pending', icon: <Clock className="h-4 w-4" /> },
+                  { key: 'under_review', label: 'Under Review', icon: <Eye className="h-4 w-4" /> },
+                  { key: submissionStatus === 'approved' ? 'approved' : submissionStatus === 'revisions_needed' ? 'revisions_needed' : submissionStatus === 'rejected' ? 'rejected' : 'decision',
+                    label: submissionStatus === 'approved' ? 'Approved' : submissionStatus === 'revisions_needed' ? 'Revisions Needed' : submissionStatus === 'rejected' ? 'Rejected' : 'Decision',
+                    icon: submissionStatus === 'approved' ? <CheckCircle2 className="h-4 w-4" /> : submissionStatus === 'revisions_needed' ? <AlertCircle className="h-4 w-4" /> : submissionStatus === 'rejected' ? <AlertCircle className="h-4 w-4" /> : <Clock className="h-4 w-4" />,
+                  },
+                ].map((step, idx, arr) => {
+                  const statusOrder = ['pending', 'under_review', 'approved', 'revisions_needed', 'rejected'];
+                  const currentIdx = statusOrder.indexOf(submissionStatus || 'pending');
+                  const stepIdx = statusOrder.indexOf(step.key);
+                  const isPast = stepIdx >= 0 && currentIdx >= 0 && stepIdx < currentIdx;
+                  const isCurrent = step.key === submissionStatus || (step.key === 'decision' && !['pending', 'under_review', 'approved', 'revisions_needed', 'rejected'].includes(submissionStatus || ''));
+                  return (
+                    <div key={step.key} className="flex items-center">
+                      <div className="flex flex-col items-center">
+                        <div className={`flex h-9 w-9 items-center justify-center rounded-full transition-colors ${
+                          isPast ? 'bg-green-100 text-green-600'
+                          : isCurrent ? 'bg-[#8B1A1A]/10 text-[#8B1A1A] ring-2 ring-[#8B1A1A]/30'
+                          : 'bg-gray-100 text-gray-300'
+                        }`}>
+                          {isPast ? <CheckCircle2 className="h-4 w-4" /> : step.icon}
+                        </div>
+                        <p className={`text-[10px] mt-1 font-medium whitespace-nowrap ${
+                          isPast ? 'text-green-700' : isCurrent ? 'text-[#8B1A1A]' : 'text-gray-400'
+                        }`}>
+                          {step.label}
+                        </p>
+                      </div>
+                      {idx < arr.length - 1 && (
+                        <div className={`w-12 sm:w-20 h-0.5 mx-2 sm:mx-3 mb-4 ${isPast ? 'bg-green-300' : 'bg-gray-200'}`} />
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {}
+      {
+}
+      {hasChanges && !analysisLimitReached && (
+        <div className="flex items-center gap-3 p-4 mb-6 rounded-lg border border-amber-200 bg-amber-50">
+          <BrainCircuit className="h-5 w-5 text-amber-600 shrink-0" />
+          <div className="flex-1">
+            <p className="text-sm font-medium text-amber-800">
+              Changes detected
+            </p>
+            <p className="text-xs text-amber-600">
+              You&apos;ve updated your fields since the last analysis. Re-analyze to
+              get updated results.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {}
+      {showResults && analysisResult && (
+        <TAFAnalysisResults
+          analysis={analysisResult}
+          reanalyzeDisabled={belowMinimum}
+          reanalyzeDisabledReason={minimumBlocker}
+          versions={versions}
+          activeVersion={activeVersion}
+          onSelectVersion={handleSelectVersion}
+          onReanalyze={handleAnalyze}
+        />
+      )}
+
+      {}
+      <Dialog open={analyzing} onOpenChange={() => {}}>
+        <DialogContent
+          className="sm:max-w-sm [&>button]:hidden"
+          onInteractOutside={(e) => e.preventDefault()}
+          onCloseAutoFocus={(e) => e.preventDefault()}
+        >
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-base justify-center">
+              <BrainCircuit className="h-5 w-5 text-indigo-600" />
+              Analyzing your TAF…
+            </DialogTitle>
+          </DialogHeader>
+          <div className="flex flex-col items-center gap-4 py-6">
+            <div className="relative">
+              <Loader2 className="h-12 w-12 animate-spin text-indigo-600" />
+              <BrainCircuit className="h-5 w-5 text-indigo-600 absolute top-3.5 left-3.5" />
+            </div>
+            <p className="text-sm text-indigo-700 text-center font-medium">
+              {ANALYSIS_STEPS[analysisStep]}
+            </p>
+            <div className="flex gap-1.5">
+              {ANALYSIS_STEPS.map((_, i) => (
+                <div
+                  key={i}
+                  className={`h-2 w-2 rounded-full transition-colors duration-300 ${
+                    i <= analysisStep ? "bg-indigo-500" : "bg-indigo-200"
+                  }`}
+                />
+              ))}
+            </div>
+            <button
+              type="button"
+              onClick={handleCancelAnalyze}
+              className="mt-1 inline-flex items-center gap-1.5 rounded-lg border border-gray-200 px-4 py-2 text-xs font-medium text-gray-500 hover:bg-gray-100 hover:text-gray-700 transition-colors cursor-pointer"
+            >
+              <X className="h-3.5 w-3.5" />
+              Cancel
+            </button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {}
+      <div className="space-y-6 mb-8 mt-8">
+        {(Object.keys(FIELD_LABELS) as Array<keyof FormFields>).map(
+          (fieldKey) => {
+            const diff = getFieldDiff(fieldKey);
+            return (
+              <Card key={fieldKey}>
+                <CardHeader className="pb-3">
+                  <CardTitle className="flex items-center gap-2 text-base text-[#333]">
+                    <span className="flex h-7 w-7 items-center justify-center rounded-md bg-[#8B1A1A]/10 shrink-0">
+                      {FIELD_ICONS[fieldKey]}
+                    </span>
+                    {FIELD_LABELS[fieldKey]}
+                    {diff && (
+                      <button
+                        type="button"
+                        onClick={() => setDiffField(fieldKey)}
+                        title="View changes made by the analysis"
+                        aria-label={`View before/after changes for ${FIELD_LABELS[fieldKey]}`}
+                        className="ml-auto inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium text-amber-700 bg-amber-50 border border-amber-200 hover:bg-amber-100 transition-colors cursor-pointer"
+                      >
+                        <GitCompareArrows className="h-3.5 w-3.5" />
+                        View Changes
+                      </button>
+                    )}
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  {fieldKey === "proposedTitle" ? (
+                    <Input
+                      placeholder="Enter your proposed research title"
+                      value={fields[fieldKey]}
+                      onChange={(e) => updateField(fieldKey, e.target.value)}
+                      disabled={isLocked}
+                      className="text-base"
+                    />
+                  ) : (
+                    <RichTextEditor
+                      value={fields[fieldKey]}
+                      onChange={(value) => updateField(fieldKey, value)}
+                      readOnly={isLocked}
+                      placeholder={`Enter ${FIELD_LABELS[fieldKey].toLowerCase()}`}
+                      minHeight={
+                        fieldKey === "literatureReview" ||
+                        fieldKey === "methodology" ||
+                        fieldKey === "referenceList"
+                          ? "160px"
+                          : "120px"
+                      }
+                    />
+                  )}
+
+                  {
+}
+                  {fieldKey !== "proposedTitle" &&
+                    (() => {
+                      const min = minForField(fieldKey);
+                      const len = htmlToText(fields[fieldKey]).trim().length;
+                      const short = len < min;
+                      return (
+                        <p
+                          className={`mt-1.5 text-right text-[11px] ${
+                            short
+                              ? "font-medium text-amber-600"
+                              : "font-medium text-green-600"
+                          }`}
+                        >
+                          {len}/{min}
+                          {short
+                            ? ` · ${min - len} more characters needed`
+                            : " · meets the minimum"}
+                        </p>
+                      );
+                    })()}
+
+                </CardContent>
+              </Card>
+            );
+          },
+        )}
+      </div>
+
+      {}
+      <Dialog open={!!diffData} onOpenChange={(open) => { if (!open) setDiffField(null); }}>
+        <DialogContent className="sm:max-w-6xl max-h-[90vh] overflow-y-auto">
+          {diffData && diffField && (
+            <>
+              <DialogHeader>
+                <DialogTitle className="flex items-center gap-2 text-base">
+                  <GitCompareArrows className="h-4 w-4 text-amber-600" />
+                  Changes: {FIELD_LABELS[diffField]}
+                </DialogTitle>
+              </DialogHeader>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2">
+                <div>
+                  <p className="text-[11px] text-gray-400 font-medium uppercase tracking-wide mb-2">
+                    Before (your original)
+                  </p>
+                  <div className="text-sm text-gray-500 bg-gray-50 border rounded-lg p-3 max-h-[62vh] overflow-y-auto">
+                    <RichTextView html={diffData.before} fallback="(empty)" />
+                  </div>
+                </div>
+                <div>
+                  <p className="text-[11px] text-green-600 font-medium uppercase tracking-wide mb-2">
+                    After (AI-improved)
+                  </p>
+                  <div className="text-sm text-[#333] bg-green-50/60 border border-green-200 rounded-lg p-3 max-h-[62vh] overflow-y-auto">
+                    <RichTextView html={diffData.after} fallback="(empty)" />
+                  </div>
+                </div>
+              </div>
+              <p className="text-xs text-gray-400 pt-2">
+                The form field above already contains the improved version — this
+                is just to show you what changed.
+              </p>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {}
+      <div className="flex flex-col sm:flex-row gap-3 justify-end border-t pt-6">
+        {showAnalysisButton && !analyzing && (
+          <>
+            <Button
+              variant="outline"
+              onClick={handleSave}
+              disabled={saving || analyzing}
+              className="flex items-center gap-2"
+            >
+              {saving ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Save className="h-4 w-4" />
+              )}
+              {tafId ? "Save Draft" : "Create Draft"}
+            </Button>
+            <Button
+              onClick={handleAnalyze}
+              disabled={saving || analyzing || belowMinimum}
+              title={minimumBlocker}
+              className="bg-indigo-600 hover:bg-indigo-700 text-white flex items-center gap-2"
+            >
+              {analyzing ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <BrainCircuit className="h-4 w-4" />
+              )}
+              Analyze TAF
+            </Button>
+          </>
+        )}
+        {}
+        {showResults && !analyzing && !showAnalysisButton && !disableAnalyze && (
+          <>
+            <Button
+              variant="outline"
+              onClick={handleSave}
+              disabled={saving}
+              className="flex items-center gap-2"
+            >
+              <Save className="h-4 w-4" />
+              Save Changes
+            </Button>
+            {
+}
+            {!analysisLimitReached && (
+              <Button
+                onClick={handleAnalyze}
+                disabled={analyzing || belowMinimum}
+                title={minimumBlocker}
+                className="bg-indigo-600 hover:bg-indigo-700 text-white flex items-center gap-2"
+              >
+                {analyzing ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <RefreshCw className="h-4 w-4" />
+                )}
+                Re-analyze (V{versions.length + 1})
+              </Button>
+            )}
+          </>
+        )}
+        <Button variant="outline" onClick={onBack}>
+          Back to List
+        </Button>
+      </div>
+    </>
+  );
+}

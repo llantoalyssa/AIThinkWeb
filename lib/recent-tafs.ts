@@ -1,0 +1,1 @@
+export type { RecentTAFEntry } from "@/server/actions/recents";
