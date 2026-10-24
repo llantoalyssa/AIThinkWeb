@@ -56,6 +56,11 @@ import {
 
 type Props = {
   tafId?: string;
+  /** The TAF record already fetched on the SERVER (see the editor page's
+   *  page.tsx). When it matches the loaded id the initial load reuses it
+   *  instead of requesting it again — that used to be a whole queued round
+   *  trip in front of the form. Absent/short on a failed lookup, in which case
+   *  the fetch below still runs exactly as before. */
   initialTaf?: TopicAbstractForm;
   onBack: () => void;
   onSaved: () => void;
@@ -108,6 +113,15 @@ const ANALYSIS_STEPS = [
   "Running AI analysis (SDG, Gap, Recos)…",
   "Generating report…",
 ];
+
+/** Coerce a stored/loaded draft (possibly PARTIAL or from an older release)
+ *  into a complete FormFields object.
+ *
+ *  A partial object is a silent data-loss bug: `fields.methodology` would be
+ *  `undefined`, the rich editor renders that as empty, the autosave then
+ *  re-persists the object WITHOUT that key, and the server treats `undefined`
+ *  as "don't touch this column" — so the field looks like it was never saved
+ *  (which is exactly the "only the title came back" report). */
 function normalizeFields(input: Partial<FormFields> | null | undefined): FormFields {
   return {
     proposedTitle: input?.proposedTitle ?? "",
@@ -118,9 +132,13 @@ function normalizeFields(input: Partial<FormFields> | null | undefined): FormFie
     referenceList: input?.referenceList ?? "",
   };
 }
+
+/** True when a field holds real content (HTML or plain text). */
 function fieldHasContent(value: string | undefined): boolean {
   return !!htmlToText(value || "").trim();
 }
+
+/** True when ANY rich-text field holds real content (title excluded). */
 function richFieldHasContent(f: FormFields): boolean {
   return (
     fieldHasContent(f.background) ||
@@ -130,6 +148,11 @@ function richFieldHasContent(f: FormFields): boolean {
     fieldHasContent(f.referenceList)
   );
 }
+
+/** MINIMUM characters required per rich-text field before a TAF can be
+ *  analyzed (the Proposed Title is exempt — it's a title). Drafts can be
+ *  saved at any length; only the analysis enforces this. The Reference List
+ *  is held to a lower bar because individual entries are short. */
 const MIN_FIELD_CHARS_DEFAULT = 1000;
 const MIN_FIELD_CHARS_BY_FIELD: Partial<Record<keyof FormFields, number>> = {
   referenceList: 500,
@@ -139,20 +162,35 @@ const minForField = (k: keyof FormFields): number =>
 
 export default function TopicAbstractFormEditor({ tafId, initialTaf, onBack, onSaved, disableAnalyze, submissionUrl, submissionStatus }: Props) {
   const router = useRouter();
+
+  // The server-preloaded record, captured once. A ref (not a dependency) so the
+  // load effect's identity never churns on a parent re-render.
   const initialTafRef = useRef(initialTaf);
+
+  // ── State ───────────────────────────────────────────
   const [fields, setFields] = useState<FormFields>(EMPTY_FIELDS);
   const [loading, setLoading] = useState(!!tafId);
+  // Gate: the form (and its 5 TipTap editors) must not mount until any local
+  // draft has been merged into `fields`. Mounting earlier made the editors
+  // start EMPTY and depend on a programmatic sync afterwards — the race that
+  // wiped restored drafts ("only the title came back").
   const [bootstrapped, setBootstrapped] = useState(false);
   const [saving, setSaving] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
   const [analysisStep, setAnalysisStep] = useState(0);
+  // UI-level cancel (stops the spinner/stepper; the in-flight server
+  // request may still finish in the background but the student isn't waiting).
   const analyzeCancelRef = useRef(false);
+  // Monotonic run id: each analyze run captures its id; a run only applies its
+  // results if it is STILL the current run and hasn't been cancelled. This
+  // prevents a cancelled (or superseded) run from dumping its output when the
+  // user cancels and re-analyzes (the server action can't be aborted mid-flight).
   const analysisRunIdRef = useRef(0);
   const stepIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   function handleCancelAnalyze() {
     analyzeCancelRef.current = true;
-
+    // Bump the run id so the in-flight run can never apply its results.
     analysisRunIdRef.current += 1;
     if (stepIntervalRef.current) {
       clearInterval(stepIntervalRef.current);
@@ -165,14 +203,27 @@ export default function TopicAbstractFormEditor({ tafId, initialTaf, onBack, onS
   const [analysisResult, setAnalysisResult] = useState<TAFAnalysisResult | null>(null);
   const [versions, setVersions] = useState<AnalysisVersion[]>([]);
   const [activeVersion, setActiveVersion] = useState<number | undefined>(undefined);
+
+  // ── Diff dialog state (before/after per field) ──────────
   const [diffField, setDiffField] = useState<keyof FormFields | null>(null);
+
+  // ── Draft autosave (localStorage) ────────────────────────
+  // Survives accidental reloads before the user hits Save. Cleared on save.
   const storageKey = tafId ? `aithink_taf_draft_${tafId}` : "aithink_taf_draft_new";
   const autosaveTimer = useRef<number | null>(null);
-  const loadedRef = useRef(false);
-  const restoreNotifiedRef = useRef(false);
+  const loadedRef = useRef(false); // gate: don't persist before load completes
+  const restoreNotifiedRef = useRef(false); // fire the "restored" toast only once
+  // Content of the pending (debounced) autosave + the key it belongs to, so a
+  // navigation inside the 600ms window can flush it instead of losing the edit.
   const pendingPayloadRef = useRef<string | null>(null);
   const pendingKeyRef = useRef<string>(storageKey);
+  // Once a new TAF is persisted (saved or analyzed), don't re-cache that exact
+  // content — it would leak into the NEXT new TAF. Content-based (not a
+  // permanent latch) so autosave resumes as soon as the user edits again.
   const persistedDraftRef = useRef<string | null>(null);
+  // True ~1.2s after mount. Inside that window the autosave refuses to replace
+  // a stored draft that has rich content with a blank one (see the guard in the
+  // autosave effect) — a data-loss backstop, independent of the editor race.
   const settledRef = useRef(false);
 
   useEffect(() => {
@@ -181,6 +232,9 @@ export default function TopicAbstractFormEditor({ tafId, initialTaf, onBack, onS
     }, 1200);
     return () => window.clearTimeout(t);
   }, []);
+
+  // Returns { before, after } for a field if the analysis enhanced it,
+  // or null if there's nothing to compare.
   function getFieldDiff(
     fieldKey: keyof FormFields,
   ): { before: string; after: string } | null {
@@ -213,7 +267,12 @@ export default function TopicAbstractFormEditor({ tafId, initialTaf, onBack, onS
   }
 
   const diffData = diffField ? getFieldDiff(diffField) : null;
+
+  // ── Load existing form ──────────────────────────────
   const loadTAF = useCallback(async (id: string) => {
+    // Reuse the record the server already loaded (see the editor page's
+    // page.tsx) when it matches; otherwise fetch it exactly as before. This
+    // removes one queued round trip from the front of every edit page load.
     const preloaded = initialTafRef.current;
     const result: TAFResult =
       preloaded && preloaded.id === id
@@ -228,6 +287,8 @@ export default function TopicAbstractFormEditor({ tafId, initialTaf, onBack, onS
     }
 
     setFields({
+      // Title is a plain input — strip any legacy HTML wrapper but
+      // never wrap it in <p> tags. Only the rich-text fields convert.
       proposedTitle: htmlToPlainText(result.data.proposedTitle),
       background: plainTextToHtml(result.data.background),
       objectives: plainTextToHtml(result.data.objectives),
@@ -235,6 +296,9 @@ export default function TopicAbstractFormEditor({ tafId, initialTaf, onBack, onS
       methodology: plainTextToHtml(result.data.methodology),
       referenceList: plainTextToHtml(result.data.referenceList),
     });
+
+    // Restore an unsaved local draft (from a previous accidental reload) on top
+    // of the saved data, so the user keeps their in-progress edits.
     try {
       const draft = window.localStorage.getItem(storageKey);
       if (draft) {
@@ -242,6 +306,10 @@ export default function TopicAbstractFormEditor({ tafId, initialTaf, onBack, onS
         if (parsed && typeof parsed === "object") {
           const local = normalizeFields(parsed);
           setFields((prev) =>
+            // Field-by-field: a BLANK value in the local cache must never wipe
+            // content that is already saved in the database. Merging the whole
+            // object (`{...prev, ...parsed}`) let a stale/partial cache blank
+            // out saved fields.
             (Object.keys(local) as (keyof FormFields)[]).reduce<FormFields>(
               (acc, key) => {
                 acc[key] =
@@ -262,11 +330,13 @@ export default function TopicAbstractFormEditor({ tafId, initialTaf, onBack, onS
         }
       }
     } catch {
-
+      // ignore malformed drafts
     }
 
     loadedRef.current = true;
     setCurrentStatus(result.data.status);
+
+    // Load versions + latest analysis
     if (result.data.status === "analyzed") {
       const [verRes, analysis] = await Promise.all([
         listAnalysisVersions(id),
@@ -285,16 +355,28 @@ export default function TopicAbstractFormEditor({ tafId, initialTaf, onBack, onS
   useEffect(() => {
     if (!tafId) return;
     const id = tafId;
-
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     loadTAF(id);
   }, [tafId, loadTAF]);
+
+  // Scroll back to the top once a (re-)analysis finishes. We do this AFTER the
+  // analyzing modal has closed (analyzing flips true→false in the finally of
+  // handleAnalyze), because smooth-scrolling while the modal covers the page
+  // does nothing visible.
+  //
+  // Why not scroll `main.flex-1.overflow-auto`: the page root is
+  // `min-h-screen flex-col`, so <main> grows with its content and has no
+  // scrollable overflow of its own — scrollTo() on it is a silent no-op and
+  // the WINDOW is what actually scrolls. The first analyze only appeared to
+  // work because the results section is inserted above the form, which shifts
+  // the layout. scrollIntoView() works whatever the scroll container is.
   const pageTopRef = useRef<HTMLButtonElement | null>(null);
 
   const scrollResultsToTop = useCallback(() => {
     const run = (instant: boolean) => {
       const behavior: ScrollBehavior = instant ? "auto" : "smooth";
       pageTopRef.current?.scrollIntoView({ behavior, block: "start" });
-
+      // Belt and braces: reset every scrollable ancestor, then the window.
       let el: HTMLElement | null = pageTopRef.current?.parentElement ?? null;
       while (el) {
         if (el.scrollHeight > el.clientHeight + 4) {
@@ -307,9 +389,14 @@ export default function TopicAbstractFormEditor({ tafId, initialTaf, onBack, onS
       }
       window.scrollTo({ top: 0, behavior });
     };
+
+    // Two animation frames for the first paint, then timed retries to outlast
+    // the Radix dialog's exit animation and any focus/scroll restoration.
     requestAnimationFrame(() => requestAnimationFrame(() => run(false)));
     window.setTimeout(() => run(false), 150);
     window.setTimeout(() => run(false), 400);
+    // Final guarantee: if something nudged us back down (dialog close, focus
+    // restore, browser scroll anchoring), snap to the top instantly.
     window.setTimeout(() => {
       const y = window.scrollY || document.documentElement.scrollTop || 0;
       if (y > 8) run(true);
@@ -323,6 +410,8 @@ export default function TopicAbstractFormEditor({ tafId, initialTaf, onBack, onS
     }
     prevAnalyzing.current = analyzing;
   }, [analyzing, analysisResult, scrollResultsToTop]);
+
+  // New-TAF (no tafId): allow autosave immediately and restore any local draft.
   useEffect(() => {
     if (tafId) return;
     loadedRef.current = true;
@@ -331,7 +420,7 @@ export default function TopicAbstractFormEditor({ tafId, initialTaf, onBack, onS
       if (draft) {
         const parsed = JSON.parse(draft) as Partial<FormFields>;
         if (parsed && typeof parsed === "object") {
-
+          // eslint-disable-next-line react-hooks/set-state-in-effect
           setFields(normalizeFields(parsed));
           if (!restoreNotifiedRef.current) {
             restoreNotifiedRef.current = true;
@@ -342,18 +431,28 @@ export default function TopicAbstractFormEditor({ tafId, initialTaf, onBack, onS
         }
       }
     } catch {
-
+      // ignore malformed drafts
     }
+    // Only now may the form mount — with the restored fields already in state,
+    // so the TipTap editors are CREATED with the draft content instead of
+    // being synced into it afterwards.
     setBootstrapped(true);
-
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tafId]);
+
+  // Debounced localStorage autosave — persist edits ~600ms after the last change.
   useEffect(() => {
-    if (!loadedRef.current) return;
+    if (!loadedRef.current) return; // don't write before the form is populated
     const payload = JSON.stringify(fields);
+    // Content that was just persisted server-side (create / analyze) and is
+    // UNCHANGED since? Don't re-cache it — that is what leaked a finished TAF
+    // into the next "New" form. Autosave resumes the moment the user edits.
     if (persistedDraftRef.current !== null && payload === persistedDraftRef.current) {
       return;
     }
     persistedDraftRef.current = null;
+    // Don't cache an entirely empty form — a blank draft would otherwise be
+    // "restored" later and fire the unsaved-draft toast for nothing.
     const blank =
       !fields.proposedTitle.trim() &&
       !htmlToText(fields.background).trim() &&
@@ -366,10 +465,15 @@ export default function TopicAbstractFormEditor({ tafId, initialTaf, onBack, onS
       try {
         window.localStorage.removeItem(storageKey);
       } catch {
-
+        // ignore
       }
       return;
     }
+    // ── Backstop: never let a blank state destroy a richer stored draft ──
+    // The editors emit a transaction when they are created; if that ever
+    // reports an empty doc again, this keeps the write from being destructive.
+    // Only applies in the settling window after mount, so a deliberate clear
+    // still persists once the page has settled.
     if (!settledRef.current && !richFieldHasContent(fields)) {
       try {
         const stored = window.localStorage.getItem(storageKey);
@@ -381,18 +485,18 @@ export default function TopicAbstractFormEditor({ tafId, initialTaf, onBack, onS
           }
         }
       } catch {
-
+        // unreadable stored draft — fall through to the normal write
       }
     }
     if (autosaveTimer.current) window.clearTimeout(autosaveTimer.current);
-
+    // Remember what is queued so an unmount can flush it (see below).
     pendingPayloadRef.current = payload;
     pendingKeyRef.current = storageKey;
     autosaveTimer.current = window.setTimeout(() => {
       try {
         window.localStorage.setItem(storageKey, payload);
       } catch {
-
+        // storage full / unavailable — silently skip
       }
       pendingPayloadRef.current = null;
     }, 600);
@@ -400,6 +504,10 @@ export default function TopicAbstractFormEditor({ tafId, initialTaf, onBack, onS
       if (autosaveTimer.current) window.clearTimeout(autosaveTimer.current);
     };
   }, [fields, storageKey]);
+
+  // Flush a pending autosave when the editor unmounts. Navigating away inside
+  // the 600ms debounce window used to throw the last edit away, because the
+  // cleanup above only cancelled the timer.
   useEffect(() => {
     return () => {
       const payload = pendingPayloadRef.current;
@@ -407,14 +515,18 @@ export default function TopicAbstractFormEditor({ tafId, initialTaf, onBack, onS
       try {
         window.localStorage.setItem(pendingKeyRef.current, payload);
       } catch {
-
+        // storage unavailable — nothing else we can do
       }
       pendingPayloadRef.current = null;
     };
   }, []);
+
+  // ── Helpers ─────────────────────────────────────────
   function updateField(name: keyof FormFields, value: string) {
     setFields((prev) => ({ ...prev, [name]: value }));
   }
+
+  /** Rich-text fields still below THEIR minimum length (blocks analysis). */
   function fieldsUnderMinimum(): { label: string; length: number; min: number }[] {
     const keys = (Object.keys(FIELD_LABELS) as Array<keyof FormFields>).filter(
       (k) => k !== "proposedTitle",
@@ -429,6 +541,10 @@ export default function TopicAbstractFormEditor({ tafId, initialTaf, onBack, onS
   }
 
   async function handleSave() {
+    // Don't create an empty draft: if the user hasn't typed anything, refuse
+    // to save so no blank card appears in the list. (Rich-text fields are
+    // normalized to plain text so an empty editor — e.g. "<p></p>" — counts
+    // as empty.)
     const isEmptyTAF =
       !fields.proposedTitle.trim() &&
       !htmlToText(fields.background).trim() &&
@@ -450,7 +566,7 @@ export default function TopicAbstractFormEditor({ tafId, initialTaf, onBack, onS
       if (tafId) {
         const result = await updateTopicAbstract({ id: tafId, ...fields });
         if (result.success) {
-
+          // Draft is now persisted server-side — clear the local autosave.
           window.localStorage.removeItem(storageKey);
           setCurrentStatus(result.data.status);
           toast.success("Draft saved!", { description: "Your changes have been saved." });
@@ -475,6 +591,8 @@ export default function TopicAbstractFormEditor({ tafId, initialTaf, onBack, onS
       setSaving(false);
     }
   }
+
+  // ── Analyze / Re-analyze ────────────────────────────
   async function handleAnalyze() {
     const titleText = fields.proposedTitle.trim();
     const bgText = htmlToText(fields.background).trim();
@@ -482,6 +600,8 @@ export default function TopicAbstractFormEditor({ tafId, initialTaf, onBack, onS
     const litText = htmlToText(fields.literatureReview).trim();
     const methodText = htmlToText(fields.methodology).trim();
     const refText = htmlToText(fields.referenceList).trim();
+
+    // ALL fields must be filled before analysis.
     if (!titleText) {
       toast.error("Proposed Title is required before analysis.");
       return;
@@ -518,6 +638,9 @@ export default function TopicAbstractFormEditor({ tafId, initialTaf, onBack, onS
       toast.error("Reference List is required before analysis.");
       return;
     }
+
+    // Per-field MINIMUM content (title excluded): every rich-text field must
+    // reach its own minimum before the TAF can be analyzed.
     const stillShort = fieldsUnderMinimum();
     if (stillShort.length > 0) {
       const detail = stillShort
@@ -532,6 +655,8 @@ export default function TopicAbstractFormEditor({ tafId, initialTaf, onBack, onS
     setAnalyzing(true);
     setAnalysisStep(0);
     analyzeCancelRef.current = false;
+    // Capture this run's id — the run only applies results if it's still current
+    // (a cancel or a newer run bumps the id, voiding this run's output).
     const myRun = ++analysisRunIdRef.current;
 
     stepIntervalRef.current = setInterval(() => {
@@ -540,7 +665,7 @@ export default function TopicAbstractFormEditor({ tafId, initialTaf, onBack, onS
     const stepInterval = stepIntervalRef.current;
 
     try {
-
+      // Save first if new TAF
       let targetId = tafId;
       if (!targetId) {
         const createResult = await createTopicAbstract(fields as CreateTAFInput);
@@ -551,17 +676,25 @@ export default function TopicAbstractFormEditor({ tafId, initialTaf, onBack, onS
           return;
         }
         targetId = createResult.data.id;
+        // The new TAF is now persisted — clear the "new draft" local cache so
+        // its content is NOT restored into the next New TAF (title carry-over)
+        // and the "restored draft" toast stops re-firing. Marking this exact
+        // content as persisted stops it being re-cached; autosave resumes on
+        // the next edit (a permanent latch used to kill autosave for the rest
+        // of the session, losing any later edits on navigation).
         persistedDraftRef.current = JSON.stringify(fields);
         try {
           window.localStorage.removeItem("aithink_taf_draft_new");
         } catch {
-
+          // ignore
         }
         addRecentTAF(targetId, createResult.data.proposedTitle || "Untitled", "draft");
         router.replace(
           `/dashboard/student/${createResult.data.studentId}/taf/${targetId}/analyzing`,
         );
       }
+
+      // Save latest field values before analyzing
       if (tafId) {
         await updateTopicAbstract({ id: tafId, ...fields });
       }
@@ -569,14 +702,20 @@ export default function TopicAbstractFormEditor({ tafId, initialTaf, onBack, onS
       const result = await analyzeTAF(targetId);
       clearInterval(stepInterval);
       stepIntervalRef.current = null;
+
+      // Void the output if the user cancelled, or if a newer run has started
+      // (this run's results are stale) — don't touch the UI in that case.
       if (analyzeCancelRef.current || myRun !== analysisRunIdRef.current) {
+        // The server action can't be aborted, so a cancelled run still wrote
+        // its result (version row + AI-enhanced fields + status='analyzed').
+        // Roll it back so cancelling leaves no trace and no "output".
         if (result.success) {
           const discard = await discardCancelledAnalysis(
             targetId,
             result.data.versionNumber,
           );
           if (discard.success) {
-
+            // Revert the local view back to the pre-analysis state.
             setCurrentStatus("draft");
             setAnalysisResult(null);
             setVersions((prev) =>
@@ -584,19 +723,28 @@ export default function TopicAbstractFormEditor({ tafId, initialTaf, onBack, onS
             );
           }
         }
-        return;
+        return; // user cancelled / superseded — don't apply results
       }
 
       if (result.success) {
         setAnalysisResult(result.data);
         setActiveVersion(result.data.versionNumber);
         setCurrentStatus("analyzed");
+
+        // Apply the AI enhancement to the form fields (the analysis
+        // already updated the TAF in the DB — mirror it here).
+        // AI returns plain text — convert to HTML paragraphs so it
+        // renders properly in the rich text editor.
+        //
+        // RULE: the enhancement only applies to HIGH-similarity runs.
+        // Low-similarity (passing) results keep the student's original
+        // content untouched — even on re-analyses — matching the server.
         const isLowSimilarity =
           result.data.judgment === "low_similarity";
         if (result.data.enhancement && !isLowSimilarity) {
           const e = result.data.enhancement;
           setFields((prev) => ({
-
+            // Title stays plain text (it's an <Input>, not rich text)
             proposedTitle: e.improvedTitle || prev.proposedTitle,
             background: plainTextToHtml(e.improvedBackground || prev.background),
             objectives: plainTextToHtml(e.improvedObjectives || prev.objectives),
@@ -609,12 +757,18 @@ export default function TopicAbstractFormEditor({ tafId, initialTaf, onBack, onS
         }
 
         await updateRecentTAFStatus(targetId, "analyzed");
+
+        // Refresh versions list
         const verRes = await listAnalysisVersions(targetId);
         if (verRes.success) setVersions(verRes.versions);
 
         toast.success("Analysis complete!", {
           description: `Version ${result.data.versionNumber} created.`,
         });
+
+        // Belt-and-braces: scroll to the top on every successful run. The
+        // analyzing-effect also does this, but on a re-analyze that path can
+        // be missed, so we scroll here too (duplicate scrolls are harmless).
         scrollResultsToTop();
       } else {
         toast.error("Analysis failed", {
@@ -629,11 +783,15 @@ export default function TopicAbstractFormEditor({ tafId, initialTaf, onBack, onS
         });
       }
     } finally {
+      // Only the CURRENT run may clear the analyzing state — otherwise a stale
+      // (cancelled/superseded) run would close a newer run's progress modal.
       if (myRun === analysisRunIdRef.current) {
         setAnalyzing(false);
       }
     }
   }
+
+  // ── Version switching ─────────────────────────────
   async function handleSelectVersion(version: number) {
     if (!tafId) return;
     const analysis = await getTAFAnalysis(tafId, version);
@@ -642,16 +800,25 @@ export default function TopicAbstractFormEditor({ tafId, initialTaf, onBack, onS
       setActiveVersion(version);
     }
   }
+
+  // ── Computed ───────────────────────────────────────
   const showAnalysisButton = currentStatus === "draft" && !disableAnalyze;
   const showResults = analysisResult !== null;
-
+  // Fields are locked when TAF has been submitted to a group
   const isLocked = !!disableAnalyze;
+
+  // ── Analysis version limit (max 5 analyses per TAF) ──
+  // Once the latest version reaches the cap, the analyze/re-analyze
+  // button is disabled (the server also enforces this as a backstop).
   const MAX_ANALYSIS_VERSIONS = 5;
   const latestVersion =
     versions.length > 0
       ? Math.max(...versions.map((v) => v.versionNumber))
       : activeVersion || 0;
   const analysisLimitReached = latestVersion >= MAX_ANALYSIS_VERSIONS;
+
+  // Analysis / re-analysis is blocked until every rich-text field reaches its
+  // minimum length — the buttons below are disabled while this is non-empty.
   const shortFields = fieldsUnderMinimum();
   const belowMinimum = shortFields.length > 0;
   const minimumBlocker = belowMinimum
@@ -659,6 +826,12 @@ export default function TopicAbstractFormEditor({ tafId, initialTaf, onBack, onS
         .map((f) => `${f.label} (${f.length}/${f.min})`)
         .join(", ")}`
     : undefined;
+
+  // Detect changes vs the analyzed baseline. When an enhancement was
+  // applied, the baseline is the improved content (the TAF was updated
+  // with it); otherwise compare against the original snapshot.
+  // Both sides are normalized to plain text so HTML vs plain-text
+  // representations of the same content don't falsely flag as changes.
   const baseline = analysisResult?.enhancement
     ? {
         proposedTitle: analysisResult.enhancement.improvedTitle,
@@ -706,6 +879,11 @@ export default function TopicAbstractFormEditor({ tafId, initialTaf, onBack, onS
       </span>
     );
   })();
+
+  // ── Loading ────────────────────────────────────────
+  // `bootstrapped` also gates the NEW-TAF path: without it the form (and its
+  // editors) mounted before the local draft was read, so the draft had to be
+  // pushed into already-created editors — a race that lost the content.
   if (loading || !bootstrapped) {
     return (
       <div className="flex items-center justify-center py-20">
@@ -713,11 +891,13 @@ export default function TopicAbstractFormEditor({ tafId, initialTaf, onBack, onS
       </div>
     );
   }
+
+  // ── Render ──────────────────────────────────────────
   return (
     <>
-      {
-
-}
+      {/* Back button — also the scroll anchor the editor jumps back to after
+          an analyze/re-analyze. scroll-mt-16 keeps it clear of the sticky
+          dashboard header. */}
       <button
         ref={pageTopRef}
         onClick={onBack}
@@ -727,7 +907,7 @@ export default function TopicAbstractFormEditor({ tafId, initialTaf, onBack, onS
         Back to My Topic Abstracts
       </button>
 
-      {}
+      {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
         <div>
           <h1 className="text-xl sm:text-2xl font-bold text-[#333]">
@@ -742,7 +922,7 @@ export default function TopicAbstractFormEditor({ tafId, initialTaf, onBack, onS
         {tafId && <div className="flex items-center gap-2">{statusBadge}</div>}
       </div>
 
-      {}
+      {/* ── Analysis limit reached banner ──────────────────── */}
       {analysisLimitReached && (
         <div className="mb-6 flex items-center gap-3 p-4 rounded-lg border border-amber-200 bg-amber-50">
           <AlertCircle className="h-5 w-5 text-amber-600 shrink-0" />
@@ -759,7 +939,7 @@ export default function TopicAbstractFormEditor({ tafId, initialTaf, onBack, onS
         </div>
       )}
 
-      {}
+      {/* ── Submitted / Locked banner with progress ──────────── */}
       {disableAnalyze && (
         <div className="mb-6 space-y-4">
           <div className="flex items-center gap-3 p-4 rounded-lg border border-blue-200 bg-blue-50">
@@ -784,7 +964,7 @@ export default function TopicAbstractFormEditor({ tafId, initialTaf, onBack, onS
             )}
           </div>
 
-          {}
+          {/* Progress tracker card */}
           <Card>
             <CardContent className="p-4">
               <div className="flex items-center justify-center">
@@ -829,9 +1009,9 @@ export default function TopicAbstractFormEditor({ tafId, initialTaf, onBack, onS
         </div>
       )}
 
-      {}
-      {
-}
+      {/* ── Changes detected banner ─────────────────────── */}
+      {/* Hidden once the analysis cap (v5) is reached — re-analysis is no
+          longer possible, so prompting for it would be misleading. */}
       {hasChanges && !analysisLimitReached && (
         <div className="flex items-center gap-3 p-4 mb-6 rounded-lg border border-amber-200 bg-amber-50">
           <BrainCircuit className="h-5 w-5 text-amber-600 shrink-0" />
@@ -847,7 +1027,7 @@ export default function TopicAbstractFormEditor({ tafId, initialTaf, onBack, onS
         </div>
       )}
 
-      {}
+      {/* ── Analysis Results (ABOVE form) ──────────────── */}
       {showResults && analysisResult && (
         <TAFAnalysisResults
           analysis={analysisResult}
@@ -860,7 +1040,7 @@ export default function TopicAbstractFormEditor({ tafId, initialTaf, onBack, onS
         />
       )}
 
-      {}
+      {/* ── Analysis Progress Modal ────────────────────── */}
       <Dialog open={analyzing} onOpenChange={() => {}}>
         <DialogContent
           className="sm:max-w-sm [&>button]:hidden"
@@ -903,7 +1083,7 @@ export default function TopicAbstractFormEditor({ tafId, initialTaf, onBack, onS
         </DialogContent>
       </Dialog>
 
-      {}
+      {/* ── Form fields ────────────────────────────────── */}
       <div className="space-y-6 mb-8 mt-8">
         {(Object.keys(FIELD_LABELS) as Array<keyof FormFields>).map(
           (fieldKey) => {
@@ -955,8 +1135,8 @@ export default function TopicAbstractFormEditor({ tafId, initialTaf, onBack, onS
                     />
                   )}
 
-                  {
-}
+                  {/* Live per-field character count (title excluded) — amber
+                      until it reaches the minimum required for analysis. */}
                   {fieldKey !== "proposedTitle" &&
                     (() => {
                       const min = minForField(fieldKey);
@@ -985,7 +1165,7 @@ export default function TopicAbstractFormEditor({ tafId, initialTaf, onBack, onS
         )}
       </div>
 
-      {}
+      {/* ── Before/After diff dialog ────────────────────── */}
       <Dialog open={!!diffData} onOpenChange={(open) => { if (!open) setDiffField(null); }}>
         <DialogContent className="sm:max-w-6xl max-h-[90vh] overflow-y-auto">
           {diffData && diffField && (
@@ -1023,7 +1203,7 @@ export default function TopicAbstractFormEditor({ tafId, initialTaf, onBack, onS
         </DialogContent>
       </Dialog>
 
-      {}
+      {/* ── Action buttons ─────────────────────────────── */}
       <div className="flex flex-col sm:flex-row gap-3 justify-end border-t pt-6">
         {showAnalysisButton && !analyzing && (
           <>
@@ -1055,7 +1235,7 @@ export default function TopicAbstractFormEditor({ tafId, initialTaf, onBack, onS
             </Button>
           </>
         )}
-        {}
+        {/* For analyzed TAFs, show both Save and Re-analyze */}
         {showResults && !analyzing && !showAnalysisButton && !disableAnalyze && (
           <>
             <Button
@@ -1067,8 +1247,8 @@ export default function TopicAbstractFormEditor({ tafId, initialTaf, onBack, onS
               <Save className="h-4 w-4" />
               Save Changes
             </Button>
-            {
-}
+            {/* Hide the Re-analyze button entirely once the analysis cap (v5)
+                is reached — showing a disabled "Re-analyze (V6)" is confusing. */}
             {!analysisLimitReached && (
               <Button
                 onClick={handleAnalyze}
