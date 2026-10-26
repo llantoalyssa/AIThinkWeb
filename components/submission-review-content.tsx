@@ -5,6 +5,7 @@ import type { SubmissionWithAnalysis } from "@/server/actions/group-submissions"
 import ApprovalProgressTracker from "@/components/approval-progress-tracker";
 import JournalViewerButton from "@/components/journal-viewer-button";
 import ScoringBreakdownCard from "@/components/scoring-breakdown-card";
+import AspectScoreBreakdown from "@/components/aspect-score-breakdown";
 import AnnotationLayer from "@/components/annotation-layer";
 import AnnotatedSection from "@/components/annotated-section";
 import AnnotatableRichEditor from "@/components/annotatable-rich-editor";
@@ -331,8 +332,9 @@ export default function SubmissionReviewContent({
                 }`}
               >
                 <span className="font-bold">{isHigh ? "Attention" : "Notice"}</span>
-                : {submission.combinedScore.toFixed(1)}% of this content matches
-                existing capstone studies in our database.
+                : estimated topical relatedness to nearest studies is{" "}
+                {submission.combinedScore.toFixed(1)}% (not percent of text
+                copied).
               </p>
               <p
                 className={`text-xs mt-1 ${
@@ -420,10 +422,12 @@ export default function SubmissionReviewContent({
                       (External × {EXTERNAL_WEIGHT.toFixed(2)})
                     </p>
                     <p className="text-xs text-gray-400 mt-1">
-                      Internal: top matching department journals (SBERT embeddings)
+                      Stage 1 retrieves Top 5; Stage 2 re-scores by research
+                      aspects (objectives, subject, method). Raw cosine ≠
+                      calibrated topical relatedness.
                     </p>
                     <p className="text-xs text-gray-400">
-                      External: Top 5 Google Scholar results via SBERT similarity
+                      Internal: department journals · External: Google Scholar
                     </p>
                   </div>
                 </div>
@@ -551,32 +555,60 @@ export default function SubmissionReviewContent({
                 {submission.internalMatches.map((match, i) => (
                   <div
                     key={match.journalId ?? match.tafId}
-                    className="flex items-start gap-3 p-3 rounded-lg bg-gray-50 border"
+                    className="p-3 rounded-lg bg-gray-50 border space-y-1"
                   >
-                    <div className="flex h-7 w-7 items-center justify-center rounded-full bg-[#8B1A1A]/10 text-xs font-bold text-[#8B1A1A] shrink-0">
-                      {i + 1}
+                    <div className="flex items-start gap-3">
+                      <div className="flex h-7 w-7 items-center justify-center rounded-full bg-[#8B1A1A]/10 text-xs font-bold text-[#8B1A1A] shrink-0">
+                        {i + 1}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium text-[#333]">
+                          {match.title || match.proposedTitle}
+                        </p>
+                        <p className="text-xs text-gray-500 mt-0.5">
+                          {match.authors || match.studentName}{" "}
+                          {match.year ? `• ${match.year}` : ""}
+                        </p>
+                        {(match.weakTopicalOverlap ||
+                          match.campusNeighborOnly) && (
+                          <span className="inline-block mt-1 text-[10px] font-medium text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded">
+                            {match.campusNeighborOnly
+                              ? "Campus neighbor"
+                              : "Weak topical overlap"}
+                          </span>
+                        )}
+                      </div>
+                      <div className="shrink-0 flex items-center gap-2">
+                        <JournalViewerButton
+                          journalId={match.journalId}
+                          highlightPhrases={match.highlightPhrases}
+                        />
+                        <span
+                          className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
+                            match.similarityPercent >= HIGH_SIMILARITY_THRESHOLD
+                              ? "bg-red-50 text-red-700"
+                              : "bg-green-50 text-green-700"
+                          }`}
+                        >
+                          {match.similarityPercent.toFixed(2)}%
+                        </span>
+                      </div>
                     </div>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium text-[#333]">
-                        {match.title || match.proposedTitle}
-                      </p>
-                      <p className="text-xs text-gray-500 mt-0.5">
-                        {match.authors || match.studentName}{" "}
-                        {match.year ? `• ${match.year}` : ""}
-                      </p>
-                    </div>
-                    <div className="shrink-0 flex items-center gap-2">
-                      <JournalViewerButton journalId={match.journalId} />
-                      <span
-                        className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
-                          match.similarityPercent >= HIGH_SIMILARITY_THRESHOLD
-                            ? "bg-red-50 text-red-700"
-                            : "bg-green-50 text-green-700"
-                        }`}
-                      >
-                        {match.similarityPercent.toFixed(2)}%
-                      </span>
-                    </div>
+                    <AspectScoreBreakdown
+                      aspects={match.aspects}
+                      matchScore={match.similarityPercent}
+                      weakTopicalOverlap={match.weakTopicalOverlap}
+                      campusNeighborOnly={match.campusNeighborOnly}
+                      phraseQuality={match.phraseQuality}
+                      sectionExplanations={match.sectionExplanations}
+                      overallJudgment={
+                        submission.judgment as
+                          | "high_similarity"
+                          | "low_similarity"
+                      }
+                      matchTitle={match.title || match.proposedTitle}
+                      compact
+                    />
                   </div>
                 ))}
               </div>
@@ -603,42 +635,64 @@ export default function SubmissionReviewContent({
                 {submission.externalMatches.map((match, i) => (
                   <div
                     key={i}
-                    className="flex items-start gap-3 p-3 rounded-lg bg-gray-50 border"
+                    className="p-3 rounded-lg bg-gray-50 border space-y-1"
                   >
-                    <div className="flex h-7 w-7 items-center justify-center rounded-full bg-purple-50 text-xs font-bold text-purple-700 shrink-0">
-                      {i + 1}
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium text-[#333]">
-                        {match.title}
-                      </p>
-                      <p className="text-xs text-gray-500 mt-0.5">
-                        {match.authors} {match.year ? `• ${match.year}` : ""}
-                        {match.publication ? ` • ${match.publication}` : ""}
-                      </p>
-                      {match.link && (
-                        <a
-                          href={match.link}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="inline-flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800 mt-1"
+                    <div className="flex items-start gap-3">
+                      <div className="flex h-7 w-7 items-center justify-center rounded-full bg-purple-50 text-xs font-bold text-purple-700 shrink-0">
+                        {i + 1}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium text-[#333]">
+                          {match.title}
+                        </p>
+                        <p className="text-xs text-gray-500 mt-0.5">
+                          {match.authors} {match.year ? `• ${match.year}` : ""}
+                          {match.publication ? ` • ${match.publication}` : ""}
+                        </p>
+                        {match.weakTopicalOverlap && (
+                          <span className="inline-block mt-1 text-[10px] font-medium text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded">
+                            Weak topical overlap
+                          </span>
+                        )}
+                        {match.link && (
+                          <a
+                            href={match.link}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800 mt-1"
+                          >
+                            <ExternalLink className="h-3 w-3" />
+                            View source
+                          </a>
+                        )}
+                      </div>
+                      <div className="shrink-0">
+                        <span
+                          className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
+                            match.similarityPercent >= HIGH_SIMILARITY_THRESHOLD
+                              ? "bg-red-50 text-red-700"
+                              : "bg-green-50 text-green-700"
+                          }`}
                         >
-                          <ExternalLink className="h-3 w-3" />
-                          View source
-                        </a>
-                      )}
+                          {match.similarityPercent.toFixed(2)}%
+                        </span>
+                      </div>
                     </div>
-                    <div className="shrink-0">
-                      <span
-                        className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
-                          match.similarityPercent >= HIGH_SIMILARITY_THRESHOLD
-                            ? "bg-red-50 text-red-700"
-                            : "bg-green-50 text-green-700"
-                        }`}
-                      >
-                        {match.similarityPercent.toFixed(2)}%
-                      </span>
-                    </div>
+                    <AspectScoreBreakdown
+                      aspects={match.aspects}
+                      matchScore={match.similarityPercent}
+                      weakTopicalOverlap={match.weakTopicalOverlap}
+                      campusNeighborOnly={match.campusNeighborOnly}
+                      phraseQuality={match.phraseQuality}
+                      sectionExplanations={match.sectionExplanations}
+                      overallJudgment={
+                        submission.judgment as
+                          | "high_similarity"
+                          | "low_similarity"
+                      }
+                      matchTitle={match.title}
+                      compact
+                    />
                   </div>
                 ))}
               </div>

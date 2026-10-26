@@ -141,6 +141,8 @@ export type JournalView = {
   year: string | null;
   fileUrl: string;
   hasText: boolean;
+  /** Plain text for overlap highlighting next to the PDF. */
+  extractedText: string;
 };
 
 export async function getJournalById(
@@ -165,6 +167,7 @@ export async function getJournalById(
   }
 
   const row = data as Record<string, unknown>;
+  const extractedText = ((row.extracted_text as string) || "").trim();
   return {
     success: true,
     data: {
@@ -173,7 +176,8 @@ export async function getJournalById(
       authors: (row.authors as string) || null,
       year: (row.year as string) || null,
       fileUrl: (row.file_url as string) || "",
-      hasText: !!((row.extracted_text as string) || "").trim(),
+      hasText: !!extractedText,
+      extractedText,
     },
   };
 }

@@ -56,15 +56,28 @@ export type AIVerdict = {
   };
 };
 
+type AspectSummary = {
+  obj: number;
+  subj: number;
+  meth: number;
+  full: number;
+};
+
 type InternalMatchSummary = {
   title: string;
   similarity: number;
+  rawCosine?: number;
+  aspects?: AspectSummary;
+  weakTopicalOverlap?: boolean;
   excerpt?: string;
 };
 
 type ExternalMatchSummary = {
   title: string;
   similarity: number;
+  rawCosine?: number;
+  aspects?: AspectSummary;
+  weakTopicalOverlap?: boolean;
   snippet?: string;
 };
 export async function analyzeWithAI(
@@ -456,12 +469,35 @@ function buildPrompt(
     return text.slice(0, fieldLimit) + `… [${label} truncated]`;
   };
 
+  const formatAspectLine = (m: {
+    similarity: number;
+    rawCosine?: number;
+    aspects?: AspectSummary;
+    weakTopicalOverlap?: boolean;
+  }): string => {
+    const parts: string[] = [
+      `${m.similarity}% calibrated topical relatedness`,
+    ];
+    if (typeof m.rawCosine === "number") {
+      parts.push(`raw cosine ${m.rawCosine}%`);
+    }
+    if (m.aspects) {
+      parts.push(
+        `aspects obj=${m.aspects.obj} subj=${m.aspects.subj} meth=${m.aspects.meth} full=${m.aspects.full}`,
+      );
+    }
+    if (m.weakTopicalOverlap) {
+      parts.push("WEAK topical overlap — nearest neighbor only, not a true peer");
+    }
+    return parts.join("; ");
+  };
+
   const internalSection =
     internal.length > 0
       ? internal
           .map(
             (m) =>
-              `- "${m.title}" (${m.similarity}% similar)${
+              `- "${m.title}" (${formatAspectLine(m)})${
                 m.excerpt && !condensed ? `\n  Excerpt: ${m.excerpt}` : ""
               }`,
           )
@@ -473,7 +509,7 @@ function buildPrompt(
       ? external
           .map(
             (m) =>
-              `- "${m.title}" (${m.similarity}% similar)${
+              `- "${m.title}" (${formatAspectLine(m)})${
                 m.snippet && !condensed ? `\n  Summary: ${m.snippet}` : ""
               }`,
           )
@@ -481,6 +517,12 @@ function buildPrompt(
       : "(none found)";
 
   const settings = `Analyze this student's proposed capstone project and return JSON.
+
+## Scoring semantics (critical)
+- Calibrated similarity % is estimated topical relatedness after aspect scoring — NOT "percent of text copied" and NOT raw embedding cosine.
+- Prefer EXTERNAL topical peers when explaining research gaps; internal campus journals often share institutional wording without sharing the research problem.
+- If a match is marked WEAK topical overlap, treat it as a nearest neighbor only: the proposal looks distinct from that work. Do NOT force differentiation advice against weak/unrelated systems; focus on sharpening the student's own contribution.
+- Objectives and subject-matter aspect scores matter more than shared words like "system", "framework", or campus names.
 
 ## Student's TAF Data
 - Proposed Title: ${truncate(taf.proposedTitle, "title")}
@@ -554,15 +596,15 @@ never lose substance. These apply to EVERY improved* field:
 {
   "sdgCategories": ["string — list of relevant UN Sustainable Development Goals. Pick 1-3 most relevant, e.g. SDG 4: Quality Education or SDG 9: Industry Innovation and Infrastructure."],
   "fieldOfIt": "string — the primary Field of Information Technology this research supports. Choose EXACTLY ONE of the following nine (return the full field name verbatim, nothing else): ${IT_FIELDS.join(" | ")}",
-  "researchGapAnalysis": "string — a detailed research gap analysis of 4-6 sentences (at least 80-120 words). Explain what the existing internal journals and external papers cover, what specific aspects they fail to address, why those gaps matter for the proposed study, and how this study intends to fill them. Be specific and cite the matched works where relevant.${condensed ? " Keep it to 3-4 concise sentences." : ""}",
+  "researchGapAnalysis": "string — a detailed research gap analysis of 4-6 sentences (at least 80-120 words). Prefer strong EXTERNAL topical peers over weak INTERNAL campus co-occurrence. Explain what truly related works cover, what they fail to address, why those gaps matter, and how this study fills them. If most internal matches are WEAK topical overlap, say the campus corpus does not contain a close peer and ground the gap in external literature instead. Never describe calibrated % as copied content.${condensed ? " Keep it to 3-4 concise sentences." : ""}",
   "recommendations": {
-    "titleSuggestions": ["string — 2-3 alternative or refined proposed titles that are more specific, clear, or differentiated from similar works"],
-    "backgroundSuggestions": ["string — 2-3 suggestions for strengthening the background (gaps to highlight, context to add)"]
+    "titleSuggestions": ["string — 2-3 alternative or refined proposed titles that are more specific, clear, or differentiated from truly similar works (ignore WEAK matches)"],
+    "backgroundSuggestions": ["string — 2-3 suggestions for strengthening the background (gaps to highlight, context to add). If matches are WEAK, focus on sharpening contribution rather than differentiating from unrelated systems."]
   },
   "similarityReduction": {
-    "driver": "string — 2-3 sentences explaining WHY this TAF still scores high similarity to its top-1 matched work. Identify the specific RESEARCH DIMENSION that overlaps (the technology/platform, the scope, the target population/context, or the methodology approach). Be concrete — name the exact shared element. IMPORTANT: SBERT measures semantic/topic similarity, not word overlap, so rewording alone will NOT lower the score.${condensed ? " Keep it concise." : ""}",
-    "topMatchTitle": "string — the title of the single most-similar matched work (the top-1 internal journal or external paper driving the score).",
-    "suggestions": ["string — 3-5 CONCRETE, actionable changes the student can make to genuinely LOWER their similarity score. Each suggestion must target a real differentiation lever — e.g. change the technology/platform, narrow or shift the scope, target a different population or context, use a different methodology angle, add a distinct evaluation/outcome, or adopt different core terminology. Each suggestion must be specific to THIS study and THIS top match, not generic advice.${condensed ? " Keep each suggestion to one short sentence." : ""}"]
+    "driver": "string — 2-3 sentences explaining WHY this TAF still scores high topical relatedness to its strongest TRUE peer (prefer external if internal is WEAK). Identify the overlapping RESEARCH DIMENSION (technology, scope, population, or method). IMPORTANT: scores measure topical relatedness, not word overlap — rewording alone will NOT lower the score.${condensed ? " Keep it concise." : ""}",
+    "topMatchTitle": "string — the title of the single most topically related matched work driving the score (skip WEAK campus-only neighbors when a stronger external peer exists).",
+    "suggestions": ["string — 3-5 CONCRETE, actionable changes to genuinely LOWER topical relatedness to that true peer — e.g. change technology/platform, narrow scope, different population/context, different methodology angle, distinct evaluation. Do not invent differentiation against WEAK/unrelated matches.${condensed ? " Keep each suggestion to one short sentence." : ""}"]
   }
 }`;
 }

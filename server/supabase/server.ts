@@ -13,9 +13,15 @@ export async function createClient() {
           return cookieStore.getAll();
         },
         setAll(cookiesToSet) {
-          cookiesToSet.forEach(({ name, value }) =>
-            cookieStore.set(name, value)
-          );
+          try {
+            cookiesToSet.forEach(({ name, value, options }) =>
+              cookieStore.set(name, value, options),
+            );
+          } catch {
+            // Called from a Server Component — cookie writes are only allowed
+            // in Server Actions / Route Handlers. Middleware refreshes the
+            // session, so this can be safely ignored here.
+          }
         },
       },
     }

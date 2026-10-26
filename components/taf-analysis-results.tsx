@@ -24,9 +24,11 @@ import {
 import {
   INTERNAL_WEIGHT,
   EXTERNAL_WEIGHT,
+  HIGH_SIMILARITY_THRESHOLD,
 } from "@/lib/constants";
 import JournalViewerButton from "@/components/journal-viewer-button";
 import ScoringBreakdownCard from "@/components/scoring-breakdown-card";
+import AspectScoreBreakdown from "@/components/aspect-score-breakdown";
 import {
   BookOpen,
   Target,
@@ -105,6 +107,28 @@ export default function TAFAnalysisResults({
 
       {}
       {versions.length > 1 && (
+        <div className="space-y-2">
+          {(() => {
+            const sorted = [...versions].sort(
+              (a, b) => a.versionNumber - b.versionNumber,
+            );
+            const first = sorted[0];
+            const latest = sorted[sorted.length - 1];
+            if (!first || !latest || first.versionNumber === latest.versionNumber) {
+              return null;
+            }
+            const delta = latest.combinedScore - first.combinedScore;
+            const verb =
+              delta < -0.05 ? "lowered" : delta > 0.05 ? "raised" : "kept similar";
+            return (
+              <p className="text-xs text-gray-600 bg-indigo-50 border border-indigo-100 rounded-lg px-3 py-2">
+                <span className="font-semibold text-indigo-900">Version insight: </span>
+                V{first.versionNumber} {first.combinedScore.toFixed(1)}% → V
+                {latest.versionNumber} {latest.combinedScore.toFixed(1)}%: your
+                revisions {verb} topical relatedness.
+              </p>
+            );
+          })()}
         <div className="flex items-start gap-2 flex-wrap">
           {versions.map((v) => {
             const isActive = (activeVersion ?? versionNumber) === v.versionNumber;
@@ -161,6 +185,7 @@ export default function TAFAnalysisResults({
               </button>
             </div>
           )}
+        </div>
         </div>
       )}
 
@@ -242,8 +267,8 @@ export default function TAFAnalysisResults({
                 <span className="font-bold">
                   {isHigh ? "Attention" : "Notice"}
                 </span>
-                : {combinedScore.toFixed(1)}% of your content matches existing
-                capstone studies in our database.
+                : estimated topical relatedness to nearest studies is{" "}
+                {combinedScore.toFixed(1)}% (not percent of text copied).
               </p>
               <p
                 className={`text-xs mt-1 ${
@@ -314,7 +339,9 @@ export default function TAFAnalysisResults({
                         {isHigh ? "High Similarity" : "Low Similarity"}
                       </span>
                       <span className="text-[10px] opacity-80 mt-0.5">
-                        {isHigh ? "≥ 25% — May need revisions" : "< 25% — Sufficiently original"}
+                        {isHigh
+                          ? `≥ ${HIGH_SIMILARITY_THRESHOLD}% — May need revisions`
+                          : `< ${HIGH_SIMILARITY_THRESHOLD}% — Sufficiently original`}
                       </span>
                     </div>
                   </div>
@@ -323,7 +350,10 @@ export default function TAFAnalysisResults({
 
 }
                   {scoringBreakdown && (
-                    <ScoringBreakdownCard breakdown={scoringBreakdown} />
+                    <ScoringBreakdownCard
+                      breakdown={scoringBreakdown}
+                      overallJudgment={judgment}
+                    />
                   )}
 
                   <div className="p-3 bg-gray-50 rounded-lg">
@@ -336,12 +366,14 @@ export default function TAFAnalysisResults({
                       {EXTERNAL_WEIGHT.toFixed(2)})
                     </p>
                     <p className="text-xs text-gray-400 mt-1">
-                      Each side = its top-5 matches, noise-reduced, then weighted
-                      Top1 40% / Top2 25% / Top3 15% / Top4 12% / Top5 8%
-                      (renormalized when fewer than 5 exist) — SBERT embeddings.
+                      Stage 1 retrieves Top 5 by whole-document similarity; Stage
+                      2 re-scores each match by objectives, subject, method, and
+                      overall aspects, then rank-weights Top1 40% / Top2 25% /
+                      Top3 15% / Top4 12% / Top5 8%.
                     </p>
                     <p className="text-xs text-gray-400">
-                      Internal: department journals · External: Google Scholar
+                      Raw cosine ≠ calibrated %. Internal: department journals ·
+                      External: Google Scholar
                     </p>
                   </div>
                 </div>
@@ -406,7 +438,12 @@ export default function TAFAnalysisResults({
           <CardContent>
             <div className="space-y-4">
               {internalMatches.map((match, i) => (
-                <InternalMatchRow key={match.journalId ?? match.tafId} match={match} rank={i + 1} />
+                <InternalMatchRow
+                  key={match.journalId ?? match.tafId}
+                  match={match}
+                  rank={i + 1}
+                  overallJudgment={judgment}
+                />
               ))}
             </div>
           </CardContent>
@@ -428,7 +465,12 @@ export default function TAFAnalysisResults({
           {externalMatches.length > 0 ? (
             <div className="space-y-4">
               {externalMatches.map((match, i) => (
-                <ExternalMatchRow key={i} match={match} rank={i + 1} />
+                <ExternalMatchRow
+                  key={i}
+                  match={match}
+                  rank={i + 1}
+                  overallJudgment={judgment}
+                />
               ))}
             </div>
           ) : (
@@ -538,33 +580,49 @@ export default function TAFAnalysisResults({
 function InternalMatchRow({
   match,
   rank,
+  overallJudgment,
 }: {
   match: InternalMatchDisplay;
   rank: number;
+  overallJudgment: "high_similarity" | "low_similarity";
 }) {
   const pct = match.similarityPercent;
   const barColor =
     pct >= 50 ? "bg-red-500" : pct >= 25 ? "bg-amber-500" : "bg-green-500";
 
   return (
-    <div className="flex items-start gap-3">
-      <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-gray-100 text-xs font-semibold text-gray-500">
-        {rank}
-      </span>
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2">
-          <p className="text-sm font-medium text-[#333] truncate">
-            {match.title || match.proposedTitle}
-          </p>
-          {match.year && (
-            <span className="shrink-0 text-[11px] text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded">
-              {match.year}
+    <div className="space-y-1 pb-3 border-b border-gray-100 last:border-b-0 last:pb-0">
+      <div className="flex items-start gap-3">
+        <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-gray-100 text-xs font-semibold text-gray-500">
+          {rank}
+        </span>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-start gap-2 flex-wrap">
+            <p className="text-sm font-medium text-[#333] break-words whitespace-normal min-w-0 flex-1">
+              {match.title || match.proposedTitle}
+            </p>
+            {match.year && (
+              <span className="shrink-0 text-[11px] text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded">
+                {match.year}
+              </span>
+            )}
+          {(match.weakTopicalOverlap || match.campusNeighborOnly) && (
+            <span className="shrink-0 text-[10px] font-medium text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded">
+              {match.campusNeighborOnly
+                ? "Campus neighbor"
+                : "Weak topical overlap"}
             </span>
           )}
         </div>
         <p className="text-xs text-gray-400">
           {match.authors || match.studentName || "Journal"}
         </p>
+        {typeof match.rawCosine === "number" && (
+          <p className="text-[10px] text-gray-400 mt-0.5">
+            Raw cosine {match.rawCosine.toFixed(1)}% → calibrated{" "}
+            {pct.toFixed(1)}%
+          </p>
+        )}
         <div className="mt-1.5 h-2 w-full rounded-full bg-gray-100 overflow-hidden">
           <div
             className={`h-full rounded-full transition-all duration-500 ${barColor}`}
@@ -573,8 +631,24 @@ function InternalMatchRow({
         </div>
       </div>
       <div className="flex items-center gap-2 shrink-0">
-        <JournalViewerButton journalId={match.journalId} />
+        <JournalViewerButton
+          journalId={match.journalId}
+          highlightPhrases={match.highlightPhrases}
+        />
         <span className="text-sm font-bold text-[#333]">{pct.toFixed(2)}%</span>
+      </div>
+      </div>
+      <div className="pl-9">
+        <AspectScoreBreakdown
+          aspects={match.aspects}
+          matchScore={pct}
+          weakTopicalOverlap={match.weakTopicalOverlap}
+          campusNeighborOnly={match.campusNeighborOnly}
+          phraseQuality={match.phraseQuality}
+          sectionExplanations={match.sectionExplanations}
+          overallJudgment={overallJudgment}
+          matchTitle={match.title || match.proposedTitle}
+        />
       </div>
     </div>
   );
@@ -583,9 +657,11 @@ function InternalMatchRow({
 function ExternalMatchRow({
   match,
   rank,
+  overallJudgment,
 }: {
   match: ExternalMatchDisplay;
   rank: number;
+  overallJudgment: "high_similarity" | "low_similarity";
 }) {
   const pct = match.similarityPercent;
   const citeStr = [match.authors, `"${match.title}"`, match.publication, match.year ? `(${match.year})` : ""]
@@ -593,34 +669,58 @@ function ExternalMatchRow({
     .join(", ");
 
   return (
-    <div className="flex items-start gap-3 pb-3 border-b border-gray-100 last:border-b-0 last:pb-0">
-      <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-purple-100 text-xs font-semibold text-purple-600">
-        {rank}
-      </span>
-      <div className="flex-1 min-w-0">
-        <p className="text-sm text-[#444] leading-relaxed italic">{citeStr}.</p>
-        <div className="flex items-center justify-between mt-1.5">
-          {match.link ? (
-            <a
-              href={match.link}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800"
-            >
-              <ExternalLink className="h-3 w-3" />
-              View source
-            </a>
-          ) : (
-            <span />
+    <div className="space-y-1 pb-3 border-b border-gray-100 last:border-b-0 last:pb-0">
+      <div className="flex items-start gap-3">
+        <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-purple-100 text-xs font-semibold text-purple-600">
+          {rank}
+        </span>
+        <div className="flex-1 min-w-0">
+          <p className="text-sm text-[#444] leading-relaxed italic">{citeStr}.</p>
+          {match.weakTopicalOverlap && (
+            <span className="inline-block mt-1 text-[10px] font-medium text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded">
+              Weak topical overlap
+            </span>
           )}
-          <span className="text-xs font-semibold text-purple-700">{pct.toFixed(2)}% similar</span>
+          <div className="flex items-center justify-between mt-1.5">
+            {match.link ? (
+              <a
+                href={match.link}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800"
+              >
+                <ExternalLink className="h-3 w-3" />
+                View source
+              </a>
+            ) : (
+              <span />
+            )}
+            <span className="text-xs font-semibold text-purple-700">
+              {pct.toFixed(2)}% related
+              {typeof match.rawCosine === "number"
+                ? ` (raw ${match.rawCosine.toFixed(1)}%)`
+                : ""}
+            </span>
+          </div>
+          <div className="mt-1.5 h-1.5 w-full rounded-full bg-gray-100 overflow-hidden">
+            <div
+              className="h-full rounded-full bg-purple-400 transition-all duration-500"
+              style={{ width: `${Math.min(pct, 100)}%` }}
+            />
+          </div>
         </div>
-        <div className="mt-1.5 h-1.5 w-full rounded-full bg-gray-100 overflow-hidden">
-          <div
-            className="h-full rounded-full bg-purple-400 transition-all duration-500"
-            style={{ width: `${Math.min(pct, 100)}%` }}
-          />
-        </div>
+      </div>
+      <div className="pl-9">
+        <AspectScoreBreakdown
+          aspects={match.aspects}
+          matchScore={pct}
+          weakTopicalOverlap={match.weakTopicalOverlap}
+          campusNeighborOnly={match.campusNeighborOnly}
+          phraseQuality={match.phraseQuality}
+          sectionExplanations={match.sectionExplanations}
+          overallJudgment={overallJudgment}
+          matchTitle={match.title}
+        />
       </div>
     </div>
   );

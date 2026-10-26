@@ -16,13 +16,31 @@ export const USER_ROLES: Record<UserRole, string> = {
   vcrdes: "VCRDES Account",
 } as const;
 export const SINGLE_ACTIVE_ROLES: UserRole[] = ["vcrdes", "dean", "associate_dean"];
+/** Applies to aspect-calibrated combined scores, not raw cosine×100. */
 export const HIGH_SIMILARITY_THRESHOLD = 25;
-export const INTERNAL_WEIGHT = 0.5;
-export const EXTERNAL_WEIGHT = 0.5;
+/** Slightly favor external scholarly peers over campus co-occurrence. */
+export const INTERNAL_WEIGHT = 0.4;
+export const EXTERNAL_WEIGHT = 0.6;
 export const RANK_WEIGHTS = [0.4, 0.25, 0.15, 0.12, 0.08];
-export const NOISE_FLOOR = 20;
-export const noiseReduce = (pct: number): number =>
-  pct <= NOISE_FLOOR ? 0 : ((pct - NOISE_FLOOR) / (100 - NOISE_FLOOR)) * 100;
+/** @deprecated Prefer INTERNAL_NOISE_FLOOR / EXTERNAL_NOISE_FLOOR. */
+export const NOISE_FLOOR = 28;
+/** Campus journals share boilerplate; higher floor than Scholar. */
+export const INTERNAL_NOISE_FLOOR = 28;
+export const EXTERNAL_NOISE_FLOOR = 22;
+/** Aspect fusion weights (must sum to 1). */
+export const ASPECT_WEIGHT_OBJ = 0.35;
+export const ASPECT_WEIGHT_SUBJ = 0.3;
+export const ASPECT_WEIGHT_METH = 0.2;
+export const ASPECT_WEIGHT_FULL = 0.15;
+/** After noise-reduce: both obj & subj below this → weak topical overlap. */
+export const ASPECT_GATE_FLOOR = 15;
+/** Cap for gated (weak topical) match scores. */
+export const ASPECT_WEAK_SCORE_CAP = 12;
+export const noiseReduce = (
+  pct: number,
+  floor: number = NOISE_FLOOR,
+): number =>
+  pct <= floor ? 0 : ((pct - floor) / (100 - floor)) * 100;
 export function rankWeightsFor(count: number): number[] {
   const n = Math.min(count, RANK_WEIGHTS.length);
   const weights = RANK_WEIGHTS.slice(0, n);

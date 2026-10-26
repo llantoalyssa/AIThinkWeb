@@ -16,12 +16,21 @@ import {
   HIGH_SIMILARITY_THRESHOLD,
   INTERNAL_WEIGHT,
   EXTERNAL_WEIGHT,
-  NOISE_FLOOR,
+  INTERNAL_NOISE_FLOOR,
+  EXTERNAL_NOISE_FLOOR,
   RANK_WEIGHTS,
-  noiseReduce,
   rankWeightsFor,
 } from "@/lib/constants";
+import {
+  buildCandidateText,
+  buildTafAspectTexts,
+  rescoreCandidatesByAspect,
+} from "@/server/analysis/aspect-similarity";
 import { extractKeywords, DEFAULT_SEARCH_QUERY } from "@/lib/nlp";
+import {
+  isInstitutionalKeywordToken,
+  scholarDomainAnchors,
+} from "@/lib/boilerplate";
 function aggregateSimilarityByRank(similarities: number[]): number {
   if (similarities.length === 0) return 0;
   const weights = rankWeightsFor(similarities.length);
@@ -31,17 +40,31 @@ function aggregateSimilarityByRank(similarities: number[]): number {
   }
   return acc;
 }
+export type SectionExplanationDisplay = {
+  score: number;
+  level: "strong" | "moderate" | "weak" | "none";
+  why: string;
+  sharedPhrases: string[];
+  exampleSentence?: string;
+};
+
 export type ScoringStep = {
   rank: number;
   label: string;
-
+  /** Stage-1 raw whole-doc cosine %. */
   raw: number;
-
+  /** Stage-2 calibrated aspect match score. */
   reduced: number;
-
   weight: number;
-
   contribution: number;
+  aspects?: { obj: number; subj: number; meth: number; full: number };
+  weakTopicalOverlap?: boolean;
+  campusNeighborOnly?: boolean;
+  phraseQuality?: "topical" | "institutional_only" | "none";
+  sectionExplanations?: Record<
+    "obj" | "subj" | "meth" | "full",
+    SectionExplanationDisplay
+  >;
 };
 
 export type ScoringSide = {
@@ -49,7 +72,10 @@ export type ScoringSide = {
   aggregate: number;
 };
 export type ScoringBreakdown = {
+  /** @deprecated Prefer internalNoiseFloor / externalNoiseFloor. */
   noiseFloor: number;
+  internalNoiseFloor: number;
+  externalNoiseFloor: number;
   rankWeights: number[];
   internal: ScoringSide;
   external: ScoringSide;
@@ -63,7 +89,19 @@ export type ScoringBreakdown = {
 };
 
 function buildScoringSide(
-  matches: { label: string; raw: number; reduced: number }[],
+  matches: {
+    label: string;
+    raw: number;
+    reduced: number;
+    aspects?: { obj: number; subj: number; meth: number; full: number };
+    weakTopicalOverlap?: boolean;
+    campusNeighborOnly?: boolean;
+    phraseQuality?: "topical" | "institutional_only" | "none";
+    sectionExplanations?: Record<
+      "obj" | "subj" | "meth" | "full",
+      SectionExplanationDisplay
+    >;
+  }[],
 ): ScoringSide {
   const weights = rankWeightsFor(matches.length);
   const steps: ScoringStep[] = matches.map((m, i) => ({
@@ -73,6 +111,11 @@ function buildScoringSide(
     reduced: m.reduced,
     weight: weights[i] ?? 0,
     contribution: m.reduced * (weights[i] ?? 0),
+    aspects: m.aspects,
+    weakTopicalOverlap: m.weakTopicalOverlap,
+    campusNeighborOnly: m.campusNeighborOnly,
+    phraseQuality: m.phraseQuality,
+    sectionExplanations: m.sectionExplanations,
   }));
   return {
     steps,
@@ -150,7 +193,17 @@ export type InternalMatchDisplay = {
   authors: string;
   year: number | null;
   similarityPercent: number;
-
+  rawCosine?: number;
+  aspects?: { obj: number; subj: number; meth: number; full: number };
+  weakTopicalOverlap?: boolean;
+  campusNeighborOnly?: boolean;
+  phraseQuality?: "topical" | "institutional_only" | "none";
+  /** Overlapping phrases/sentences for journal text highlighting. */
+  highlightPhrases?: string[];
+  sectionExplanations?: Record<
+    "obj" | "subj" | "meth" | "full",
+    SectionExplanationDisplay
+  >;
   tafId?: string;
   studentName?: string;
   proposedTitle?: string;
@@ -163,6 +216,16 @@ export type ExternalMatchDisplay = {
   year: number | null;
   link: string;
   similarityPercent: number;
+  rawCosine?: number;
+  aspects?: { obj: number; subj: number; meth: number; full: number };
+  weakTopicalOverlap?: boolean;
+  campusNeighborOnly?: boolean;
+  phraseQuality?: "topical" | "institutional_only" | "none";
+  highlightPhrases?: string[];
+  sectionExplanations?: Record<
+    "obj" | "subj" | "meth" | "full",
+    SectionExplanationDisplay
+  >;
 };
 
 export type AnalyzeTAFResult =
@@ -275,11 +338,15 @@ export async function analyzeTAF(tafId: string): Promise<AnalyzeTAFResult> {
       error: `You have reached the maximum of ${MAX_ANALYSIS_VERSIONS} analyses for this TAF. Further re-analysis is no longer allowed.`,
     };
   }
-  const rawQueryForSearch = htmlToPlainText(
-    taf.proposed_title || (taf.background as string)?.slice(0, 500) || "",
+  const titlePlain = htmlToPlainText(taf.proposed_title || "");
+  const objectivesPlain = htmlToPlainText(taf.objectives || "");
+  const scholarSource = `${titlePlain} ${objectivesPlain}`.trim();
+  const keywords = extractKeywords(scholarSource, 8, 3).filter(
+    (k) => !isInstitutionalKeywordToken(k),
   );
-  const keywords = extractKeywords(rawQueryForSearch, 6, 3);
-  const externalSearchQuery = keywords.join(" ") || DEFAULT_SEARCH_QUERY;
+  const anchors = scholarDomainAnchors(scholarSource);
+  const externalSearchQuery =
+    [...keywords, ...anchors].join(" ").trim() || DEFAULT_SEARCH_QUERY;
   const externalSearchPromise = searchGoogleScholar(externalSearchQuery, 10);
 
   const recencyCutoffYear = getRecencyCutoffYear();
@@ -318,6 +385,10 @@ export async function analyzeTAF(tafId: string): Promise<AnalyzeTAFResult> {
           excerpt: (j.embedding_text || j.extracted_text || "")
             .replace(/\s+/g, " ")
             .slice(0, 500),
+          // Longer body for Stage-2 overlap phrases / section explanations
+          bodyText: (j.embedding_text || j.extracted_text || "")
+            .replace(/\s+/g, " ")
+            .slice(0, 6000),
         },
       });
     }
@@ -329,30 +400,73 @@ export async function analyzeTAF(tafId: string): Promise<AnalyzeTAFResult> {
       console.error("[analyzeTAF] Journal embedding comparison failed:", embedErr);
     }
   }
-  const internalRawPercents = internalResults.map((r) => r.similarity);
-  internalResults = internalResults.map((r) => ({
-    ...r,
-    similarity: noiseReduce(r.similarity),
-  }));
-  const internalScore = aggregateSimilarityByRank(
-    internalResults.map((r) => r.similarity),
-  );
+  const tafAspects = buildTafAspectTexts({
+    proposedTitle: taf.proposed_title || "",
+    background: htmlToPlainText(taf.background || ""),
+    objectives: htmlToPlainText(taf.objectives || ""),
+    methodology: htmlToPlainText(taf.methodology || ""),
+    fullText: myText,
+  });
 
-  const internalMatches: InternalMatchDisplay[] = internalResults.map((r) => ({
-    journalId: r.id,
-    title: (r.meta?.journalTitle as string) || "Untitled",
-    authors: (r.meta?.journalAuthors as string) || "",
-    year: (r.meta?.year as number) || null,
-    similarityPercent: r.similarity,
-  }));
+  let internalMatches: InternalMatchDisplay[] = [];
+  let internalScore = 0;
+
+  if (internalResults.length > 0) {
+    try {
+      const aspectInternal = await rescoreCandidatesByAspect({
+        tafAspects,
+        tafDomainText: `${titlePlain} ${objectivesPlain}`,
+        corpus: "internal",
+        candidates: internalResults.map((r) => ({
+          id: r.id,
+          rawCosine: r.similarity,
+          text: buildCandidateText({
+            title: (r.meta?.journalTitle as string) || "",
+            body:
+              (r.meta?.bodyText as string) ||
+              (r.meta?.excerpt as string) ||
+              "",
+          }),
+          meta: r.meta,
+        })),
+      });
+      internalMatches = aspectInternal.map((a) => ({
+        journalId: a.id,
+        title: (a.meta?.journalTitle as string) || "Untitled",
+        authors: (a.meta?.journalAuthors as string) || "",
+        year: (a.meta?.year as number) || null,
+        similarityPercent: a.matchScore,
+        rawCosine: a.rawCosine,
+        aspects: a.aspects,
+        weakTopicalOverlap: a.weakTopicalOverlap,
+        campusNeighborOnly: a.campusNeighborOnly,
+        phraseQuality: a.phraseQuality,
+        highlightPhrases: a.highlightPhrases,
+        sectionExplanations: a.sectionExplanations,
+      }));
+      internalScore = aggregateSimilarityByRank(
+        internalMatches.map((m) => m.similarityPercent),
+      );
+    } catch (aspectErr) {
+      console.error("[analyzeTAF] Internal aspect rescore failed:", aspectErr);
+      internalMatches = internalResults.map((r) => ({
+        journalId: r.id,
+        title: (r.meta?.journalTitle as string) || "Untitled",
+        authors: (r.meta?.journalAuthors as string) || "",
+        year: (r.meta?.year as number) || null,
+        similarityPercent: 0,
+        rawCosine: r.similarity,
+        weakTopicalOverlap: true,
+      }));
+    }
+  }
+
   const externalSearchResult = await externalSearchPromise;
 
   if (!externalSearchResult.success) {
     console.error("[analyzeTAF] External search failed:", externalSearchResult.error);
   }
   let externalScore = 0;
-
-  const externalRawPercents: number[] = [];
   const externalMatches: ExternalMatchDisplay[] = [];
 
   if (externalSearchResult.success && externalSearchResult.results.length > 0) {
@@ -370,49 +484,84 @@ export async function analyzeTAF(tafId: string): Promise<AnalyzeTAFResult> {
         publication: r.publication,
         year: r.year,
         link: r.link,
+        summary: r.summary,
       },
     }));
     const { findTopSimilar } = await import("@/server/analysis/similarity");
     const externalScored = await findTopSimilar(myText, externalCandidates, 5);
-    for (const r of externalScored) externalRawPercents.push(r.similarity);
-    const externalSimResults = externalScored.map((r) => ({
-      ...r,
-      similarity: noiseReduce(r.similarity),
-    }));
 
-    for (const r of externalSimResults) {
-      externalMatches.push({
-        title: (r.meta?.title as string) || "",
-        authors: (r.meta?.authors as string) || "",
-        publication: (r.meta?.publication as string) || "",
-        year: (r.meta?.year as number) || null,
-        link: (r.meta?.link as string) || "",
-        similarityPercent: r.similarity,
-      });
+    if (externalScored.length > 0) {
+      try {
+        const aspectExternal = await rescoreCandidatesByAspect({
+          tafAspects,
+          tafDomainText: `${titlePlain} ${objectivesPlain}`,
+          corpus: "external",
+          candidates: externalScored.map((r) => ({
+            id: r.id,
+            rawCosine: r.similarity,
+            text: buildCandidateText({
+              title: (r.meta?.title as string) || "",
+              body: `${(r.meta?.summary as string) || ""} ${(r.meta?.publication as string) || ""}`,
+            }),
+            meta: r.meta,
+          })),
+        });
+        for (const a of aspectExternal) {
+          externalMatches.push({
+            title: (a.meta?.title as string) || "",
+            authors: (a.meta?.authors as string) || "",
+            publication: (a.meta?.publication as string) || "",
+            year: (a.meta?.year as number) || null,
+            link: (a.meta?.link as string) || "",
+            similarityPercent: a.matchScore,
+            rawCosine: a.rawCosine,
+            aspects: a.aspects,
+            weakTopicalOverlap: a.weakTopicalOverlap,
+            campusNeighborOnly: a.campusNeighborOnly,
+            phraseQuality: a.phraseQuality,
+            highlightPhrases: a.highlightPhrases,
+            sectionExplanations: a.sectionExplanations,
+          });
+        }
+        externalScore = aggregateSimilarityByRank(
+          externalMatches.map((m) => m.similarityPercent),
+        );
+      } catch (aspectErr) {
+        console.error("[analyzeTAF] External aspect rescore failed:", aspectErr);
+      }
     }
-    externalScore = aggregateSimilarityByRank(
-      externalSimResults.map((r) => r.similarity),
-    );
   }
   const combinedScore =
     INTERNAL_WEIGHT * internalScore + EXTERNAL_WEIGHT * externalScore;
   const judgment: "high_similarity" | "low_similarity" =
     combinedScore >= HIGH_SIMILARITY_THRESHOLD ? "high_similarity" : "low_similarity";
   const scoringBreakdown: ScoringBreakdown = {
-    noiseFloor: NOISE_FLOOR,
+    noiseFloor: INTERNAL_NOISE_FLOOR,
+    internalNoiseFloor: INTERNAL_NOISE_FLOOR,
+    externalNoiseFloor: EXTERNAL_NOISE_FLOOR,
     rankWeights: RANK_WEIGHTS,
     internal: buildScoringSide(
-      internalMatches.map((m, i) => ({
+      internalMatches.map((m) => ({
         label: m.title,
-        raw: internalRawPercents[i] ?? 0,
+        raw: m.rawCosine ?? 0,
         reduced: m.similarityPercent,
+        aspects: m.aspects,
+        weakTopicalOverlap: m.weakTopicalOverlap,
+        campusNeighborOnly: m.campusNeighborOnly,
+        phraseQuality: m.phraseQuality,
+        sectionExplanations: m.sectionExplanations,
       })),
     ),
     external: buildScoringSide(
-      externalMatches.map((m, i) => ({
+      externalMatches.map((m) => ({
         label: m.title,
-        raw: externalRawPercents[i] ?? 0,
+        raw: m.rawCosine ?? 0,
         reduced: m.similarityPercent,
+        aspects: m.aspects,
+        weakTopicalOverlap: m.weakTopicalOverlap,
+        campusNeighborOnly: m.campusNeighborOnly,
+        phraseQuality: m.phraseQuality,
+        sectionExplanations: m.sectionExplanations,
       })),
     ),
     internalWeight: INTERNAL_WEIGHT,
@@ -434,13 +583,18 @@ export async function analyzeTAF(tafId: string): Promise<AnalyzeTAFResult> {
     internalMatches.slice(0, 3).map((m) => ({
       title: m.title,
       similarity: m.similarityPercent,
-      excerpt: internalResults.find((r) => r.id === m.journalId)?.meta?.excerpt as
-        | string
-        | undefined,
+      rawCosine: m.rawCosine,
+      aspects: m.aspects,
+      weakTopicalOverlap: m.weakTopicalOverlap,
+      excerpt: (internalResults.find((r) => r.id === m.journalId)?.meta
+        ?.excerpt as string | undefined),
     })),
     externalMatches.slice(0, 3).map((m) => ({
       title: m.title,
       similarity: m.similarityPercent,
+      rawCosine: m.rawCosine,
+      aspects: m.aspects,
+      weakTopicalOverlap: m.weakTopicalOverlap,
       snippet: m.publication,
     })),
   );
