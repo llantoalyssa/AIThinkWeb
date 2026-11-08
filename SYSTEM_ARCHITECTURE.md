@@ -162,7 +162,7 @@ ADVISER  ───────────── approve ─────►  ASS
    └─ return ─────────────────────────────────────────┐         │
                                                       ▼         ▼
                                                   fully approved
-        ▲                                                   (VCRDES = final)
+        ▲                                                   (VCRDES = final approver)
         │                      Student edits & resubmits
         └──── RETURNED ─────────────────────────────────────────┘
 ```
@@ -183,6 +183,7 @@ Fixed cycle — **no adviser route picker**:
 
 Associate Dean / Dean / VCRDES each get a dashboard with:
 
+- **Executive Summary** (default landing tab of DEAN)
 - **Research Analytics** (default landing tab), **TAF Submissions** (pending approvals table — Advisory Group, Proposed Title, Similarity, Date, Status; **rows click through** to the submission review page), and **Approved TAF** (searchable + academic-year filter).
 - **Research Analytics** aggregates **fully-approved TAFs** into: Most/Least Referenced capstones (by internal-match count), SDG + Field-of-IT bar graphs, Top/Bottom similarity, a KPI strip, and per-year filtering; SDG/FoIT dialogs expand to a searchable approved-TAF table with PDF export.
 - The submission review page shows the **exact same layout** for every approver and the adviser (shared `SubmissionReviewContent`), with role-specific Approve/Return buttons.
