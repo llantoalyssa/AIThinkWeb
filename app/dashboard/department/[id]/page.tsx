@@ -4,6 +4,7 @@ import { useEffect, useState, useMemo, useRef } from 'react'
 import { useRouter, useParams, useSearchParams } from 'next/navigation'
 import { toast } from 'sonner'
 import { getDepartmentShell } from '@/server/actions/approver-shell'
+import { useUnreadNotifications } from '@/hooks/use-unread-notifications'
 import { type CurrentUser } from '@/server/actions/auth'
 import { UserMenu } from '@/components/user-menu'
 import {
@@ -13,6 +14,8 @@ import {
   deleteUser,
   type DepartmentUser,
 } from '@/server/actions/department'
+import { setUserPermission } from '@/server/actions/permissions'
+import type { PermissionChange, PermissionGroup } from '@/server/actions/permissions'
 import { type Journal } from '@/server/actions/journals'
 import { type FeedbackItem } from '@/server/actions/feedback'
 import { Button } from '@/components/ui/button'
@@ -34,24 +37,64 @@ import {
   Pencil,
   Search,
   UserRound,
+  ShieldAlert,
 } from 'lucide-react'
 import NotificationBell from '@/components/notification-bell'
 import {
-  departmentNav,
   departmentNotificationsHref,
   DEPARTMENT_SECTIONS,
 } from './department-nav'
-import { USER_ROLES, type UserRole } from '@/lib/constants'
-import UserDialog from '@/components/department-user-dialog'
+import { navItemsFor, departmentItemPermission } from '@/components/nav-items'
+import { USER_ROLES } from '@/lib/constants'
+import UserDialog, { type UserDialogSubmit } from '@/components/department-user-dialog'
+import StudentBulkUpload from '@/components/student-bulk-upload'
 import DepartmentJournals from '@/components/department-journals'
 import DepartmentFeedback from '@/components/department-feedback'
+import DepartmentSubmissions from '@/components/department-submissions'
+import SupervisorAdvisoryGroups from '@/components/supervisor-advisory-groups'
+import TablePagination from '@/components/table-pagination'
+const USERS_PER_PAGE = 10
+function sectionAllowed(
+  section: string,
+  permissions: string[] | undefined
+): boolean {
+  if (permissions === undefined) return true
+  const required = departmentItemPermission(section)
+  return required === undefined || permissions.includes(required)
+}
+function SectionNoAccess({
+  title,
+  permission,
+}: {
+  title: string
+  permission: string
+}) {
+  return (
+    <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-gray-200 bg-white py-16 text-center">
+      <ShieldAlert className="mb-3 h-8 w-8 text-gray-300" />
+      <h3 className="mb-1 text-lg font-medium text-[#333]">
+        No access to {title}
+      </h3>
+      <p className="max-w-md text-sm text-gray-500">
+        This account has not been granted this page ({permission}). Ask a
+        department account to grant it.
+      </p>
+    </div>
+  )
+}
 
 export default function DepartmentDashboardPage() {
   const router = useRouter()
   const params = useParams<{ id: string }>()
   const urlUserId = params.id
-  const navItems = departmentNav(urlUserId)
+  const [permissions, setPermissions] = useState<string[] | undefined>(undefined)
+  const navItems = navItemsFor({
+    role: 'department',
+    userId: urlUserId,
+    permissions,
+  })
   const notificationsHref = departmentNotificationsHref(urlUserId)
+  const unreadCount = useUnreadNotifications(urlUserId)
   function goToNavItem(item: { id: string; href?: string }) {
     if (!item.href) return
     if (item.href.includes('?section=')) {
@@ -72,6 +115,7 @@ export default function DepartmentDashboardPage() {
   const [users, setUsers] = useState<DepartmentUser[]>([])
   const [usersLoading, setUsersLoading] = useState(false)
   const [usersError, setUsersError] = useState<string | null>(null)
+  const [usersPage, setUsersPage] = useState(1)
   const [initialJournals, setInitialJournals] = useState<Journal[] | undefined>(
     undefined,
   )
@@ -81,6 +125,7 @@ export default function DepartmentDashboardPage() {
   const usersCoveredByShellRef = useRef(false)
   const [searchQuery, setSearchQuery] = useState('')
   const [roleFilter, setRoleFilter] = useState<string>('all')
+  const [userTab, setUserTab] = useState<'students' | 'staff'>('students')
   const [sidebarExpanded, setSidebarExpanded] = useState(true)
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const [dialogOpen, setDialogOpen] = useState(false)
@@ -88,6 +133,14 @@ export default function DepartmentDashboardPage() {
   const [editingUser, setEditingUser] = useState<DepartmentUser | null>(null)
   const [dialogSession, setDialogSession] = useState(0)
   const createCancelRef = useRef(false)
+  const [permissionGroups, setPermissionGroups] = useState<PermissionGroup[]>([])
+  const [roleDefaults, setRoleDefaults] = useState<Record<string, string[]>>({})
+  const [overridesByUser, setOverridesByUser] = useState<
+    Record<string, Record<string, boolean>>
+  >({})
+  const [editingPermissionOverrides, setEditingPermissionOverrides] = useState<
+    Record<string, boolean>
+  >({})
   useEffect(() => {
     let cancelled = false
     async function fetchShell() {
@@ -108,17 +161,23 @@ export default function DepartmentDashboardPage() {
       }
       usersCoveredByShellRef.current = true
       setCurrentUser(u)
+
+      setPermissions(shell.permissions)
       setUsers(shell.users)
       setUsersError(shell.usersError)
       setInitialJournals(shell.journals ?? undefined)
       setInitialFeedback(shell.feedback ?? undefined)
       setLoading(false)
+      setPermissionGroups(shell.permissionConsole?.groups ?? [])
+      setRoleDefaults(shell.permissionConsole?.roleDefaults ?? {})
+      setOverridesByUser(shell.permissionConsole?.overridesByUser ?? {})
     }
     void fetchShell()
     return () => { cancelled = true }
   }, [router, urlUserId])
   useEffect(() => {
     if (activePage !== 'users' || !currentUser) return
+    if (!sectionAllowed('users', permissions)) return
     if (usersCoveredByShellRef.current) {
       usersCoveredByShellRef.current = false
       return
@@ -141,7 +200,7 @@ export default function DepartmentDashboardPage() {
 
     load()
     return () => { cancelled = true }
-  }, [activePage, currentUser])
+  }, [activePage, currentUser, permissions])
   useEffect(() => {
     function handleResize() {
       if (window.innerWidth >= 768) setMobileMenuOpen(false)
@@ -153,32 +212,49 @@ export default function DepartmentDashboardPage() {
     setDialogMode('create')
     setEditingUser(null)
     createCancelRef.current = false
+    setEditingPermissionOverrides({})
     setDialogSession((n) => n + 1)
     setDialogOpen(true)
   }
-
   function handleEditUser(user: DepartmentUser) {
     setDialogMode('edit')
     setEditingUser(user)
     createCancelRef.current = false
+    setEditingPermissionOverrides(overridesByUser[user.id] ?? {})
     setDialogSession((n) => n + 1)
     setDialogOpen(true)
+  }
+  async function applyPermissionChanges(
+    targetUserId: string,
+    changes: PermissionChange[],
+  ): Promise<string[]> {
+    const failures: string[] = []
+    for (const change of changes) {
+      const saved = await setUserPermission(
+        targetUserId,
+        change.permission,
+        change.granted,
+      )
+      if (!saved.success) {
+        failures.push(`${change.permission} — ${saved.error}`)
+      } else {
+        setOverridesByUser((prev) => {
+          const forUser = { ...(prev[targetUserId] ?? {}) }
+          if (change.granted === null) delete forUser[change.permission]
+          else forUser[change.permission] = change.granted
+          return { ...prev, [targetUserId]: forUser }
+        })
+      }
+    }
+    return failures
   }
   function handleDialogCancel() {
     if (dialogMode === 'create') createCancelRef.current = true
   }
 
-  async function handleFormSubmit(data: {
-    firstName: string
-    lastName: string
-    middleInitial: string
-    suffix: string
-    srCode: string
-    email: string
-    password: string
-    role: UserRole
-    isActive: boolean
-  }): Promise<{ success: boolean; error?: string; cancelled?: boolean }> {
+  async function handleFormSubmit(
+    data: UserDialogSubmit,
+  ): Promise<{ success: boolean; error?: string; cancelled?: boolean }> {
     if (dialogMode === 'create') {
       const result = await createUser(data)
       if (createCancelRef.current) {
@@ -201,6 +277,12 @@ export default function DepartmentDashboardPage() {
       }
 
       if (result.success) {
+
+        const permissionFailures = await applyPermissionChanges(
+          result.data.userId,
+          data.permissionChanges,
+        )
+
         toast.success(
           result.data?.createdInactive
             ? 'User created (inactive).'
@@ -214,6 +296,11 @@ export default function DepartmentDashboardPage() {
 
         const updated = await getAllUsers()
         if (updated.success) setUsers(updated.data)
+        if (permissionFailures.length > 0) {
+          toast.warning('The account was created, but some permissions were not saved.', {
+            description: permissionFailures.join('\n'),
+          })
+        }
         return { success: true }
       }
       return { success: false, error: result.error }
@@ -229,10 +316,20 @@ export default function DepartmentDashboardPage() {
         isActive: data.isActive,
       })
       if (result.success) {
+        const permissionFailures = await applyPermissionChanges(
+          editingUser.id,
+          data.permissionChanges,
+        )
+
         toast.success('User updated successfully.')
 
         const updated = await getAllUsers()
         if (updated.success) setUsers(updated.data)
+        if (permissionFailures.length > 0) {
+          toast.warning('The account was updated, but some permissions were not saved.', {
+            description: permissionFailures.join('\n'),
+          })
+        }
         return { success: true }
       }
       return { success: false, error: result.error }
@@ -259,8 +356,24 @@ export default function DepartmentDashboardPage() {
     const updated = await getAllUsers()
     if (updated.success) setUsers(updated.data)
   }
+  const tabCounts = useMemo(
+    () => ({
+      students: users.filter((u) => u.role === 'student').length,
+      staff: users.filter((u) => u.role !== 'student').length,
+    }),
+    [users],
+  )
+  function switchUserTab(next: 'students' | 'staff') {
+    setUserTab(next)
+    setRoleFilter('all')
+    setUsersPage(1)
+  }
   const filteredUsers = useMemo(() => {
-    let result = users
+
+    let result =
+      userTab === 'students'
+        ? users.filter((u) => u.role === 'student')
+        : users.filter((u) => u.role !== 'student')
     if (roleFilter !== 'all') {
       result = result.filter((u) => u.role === roleFilter)
     }
@@ -277,7 +390,16 @@ export default function DepartmentDashboardPage() {
     }
 
     return result
-  }, [users, roleFilter, searchQuery])
+  }, [users, roleFilter, searchQuery, userTab])
+  const usersTotalPages = Math.max(
+    1,
+    Math.ceil(filteredUsers.length / USERS_PER_PAGE)
+  )
+  const usersSafePage = Math.min(usersPage, usersTotalPages)
+  const pagedUsers = filteredUsers.slice(
+    (usersSafePage - 1) * USERS_PER_PAGE,
+    usersSafePage * USERS_PER_PAGE
+  )
   const firstName = currentUser?.firstName || ''
   const lastName = currentUser?.lastName || ''
   const greeting = firstName || 'Department'
@@ -328,7 +450,7 @@ export default function DepartmentDashboardPage() {
         {}
         <aside
           className={`hidden md:flex flex-col border-r bg-white transition-all duration-200 self-start sticky top-14 h-[calc(100vh-3.5rem)] overflow-y-auto ${
-            sidebarExpanded ? 'w-48' : 'w-16'
+            sidebarExpanded ? 'w-64' : 'w-16'
           } shrink-0`}
         >
           <nav className="flex flex-col gap-1 p-2 pt-4">
@@ -344,7 +466,12 @@ export default function DepartmentDashboardPage() {
                 title={item.label}
               >
                 {item.icon}
-                {sidebarExpanded && <span>{item.label}</span>}
+                {sidebarExpanded && <span className="flex-1 text-left truncate">{item.label}</span>}
+                {sidebarExpanded && item.id === 'notifications' && unreadCount > 0 && (
+                  <span className="flex h-5 w-5 items-center justify-center rounded-full bg-[#8B1A1A] text-[10px] font-bold text-white">
+                    {unreadCount > 9 ? '9+' : unreadCount}
+                  </span>
+                )}
               </button>
             ))}
           </nav>
@@ -357,7 +484,7 @@ export default function DepartmentDashboardPage() {
               className="absolute inset-0 bg-black/30"
               onClick={() => setMobileMenuOpen(false)}
             />
-            <aside className="absolute left-0 top-0 bottom-0 w-56 overflow-y-auto bg-white shadow-xl">
+            <aside className="absolute left-0 top-14 bottom-0 z-40 w-64 overflow-y-auto bg-white shadow-xl">
               <nav className="flex flex-col gap-1 p-3 pt-6">
                 {navItems.map((item) => (
                   <button
@@ -374,6 +501,11 @@ export default function DepartmentDashboardPage() {
                   >
                     {item.icon}
                     <span>{item.label}</span>
+                    {item.id === 'notifications' && unreadCount > 0 && (
+                      <span className="flex h-5 w-5 items-center justify-center rounded-full bg-[#8B1A1A] text-[10px] font-bold text-white">
+                        {unreadCount > 9 ? '9+' : unreadCount}
+                      </span>
+                    )}
                   </button>
                 ))}
               </nav>
@@ -382,13 +514,18 @@ export default function DepartmentDashboardPage() {
         )}
 
         {}
-        <main className="flex-1 overflow-auto">
-          <div className="mx-auto max-w-6xl px-4 py-6 sm:px-6 lg:px-8">
+        <main className="flex-1 overflow-auto pb-mobile-nav">
+          <div className="w-auto px-4 py-6 sm:px-6 lg:px-8">
 
             {}
             {}
             {}
-            {activePage === 'users' && (
+            {
+}
+            {activePage === 'users' && !sectionAllowed('users', permissions) && (
+              <SectionNoAccess title="Users" permission="pages.users" />
+            )}
+            {activePage === 'users' && sectionAllowed('users', permissions) && (
               <>
                 {}
                 <div className="mb-6 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
@@ -400,13 +537,61 @@ export default function DepartmentDashboardPage() {
                       Manage all user accounts across the system.
                     </p>
                   </div>
-                  <Button
-                    onClick={handleNewUser}
-                    className="bg-green-600 hover:bg-green-700 text-white"
-                  >
-                    <Plus className="h-4 w-4 mr-2" />
-                    New User
-                  </Button>
+                  <div className="flex flex-wrap items-center gap-2">
+                    {
+}
+                    {userTab === 'students' && (
+                      <StudentBulkUpload
+                        onDone={async () => {
+                          const refreshed = await getAllUsers()
+                          if (refreshed.success) setUsers(refreshed.data)
+                        }}
+                      />
+                    )}
+                    <Button
+                      onClick={handleNewUser}
+                      className="bg-green-600 hover:bg-green-700 text-white"
+                    >
+                      <Plus className="h-4 w-4 mr-2" />
+                      New User
+                    </Button>
+                  </div>
+                </div>
+
+                {}
+                <div
+                  role="tablist"
+                  aria-label="Filter users by account group"
+                  className="mb-4 inline-flex rounded-lg border border-gray-200 bg-white p-1"
+                >
+                  {([
+                    { id: 'students' as const, label: 'Students', count: tabCounts.students },
+                    { id: 'staff' as const, label: 'Faculty & Staff', count: tabCounts.staff },
+                  ]).map((tab) => (
+                    <button
+                      key={tab.id}
+                      type="button"
+                      role="tab"
+                      aria-selected={userTab === tab.id}
+                      onClick={() => switchUserTab(tab.id)}
+                      className={`inline-flex items-center gap-2 rounded-md px-4 py-2 text-sm font-medium transition-colors cursor-pointer ${
+                        userTab === tab.id
+                          ? 'bg-[#8B1A1A] text-white'
+                          : 'text-gray-600 hover:bg-gray-50'
+                      }`}
+                    >
+                      {tab.label}
+                      <span
+                        className={`rounded-full px-1.5 text-[11px] font-semibold ${
+                          userTab === tab.id
+                            ? 'bg-white/20 text-white'
+                            : 'bg-gray-100 text-gray-500'
+                        }`}
+                      >
+                        {tab.count}
+                      </span>
+                    </button>
+                  ))}
                 </div>
 
                 {}
@@ -414,12 +599,19 @@ export default function DepartmentDashboardPage() {
                   <div className="relative flex-1">
                     <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
                     <Input
-                      placeholder="Search by SR code, name, or email..."
+                      placeholder={
+                        userTab === 'students'
+                          ? 'Search by SR code, name, or email...'
+                          : 'Search by name or email...'
+                      }
                       value={searchQuery}
                       onChange={(e) => setSearchQuery(e.target.value)}
                       className="pl-9"
                     />
                   </div>
+                  {
+}
+                  {userTab === 'staff' && (
                   <div className="w-full sm:w-48">
                     <Select value={roleFilter} onValueChange={setRoleFilter}>
                       <SelectTrigger>
@@ -427,14 +619,17 @@ export default function DepartmentDashboardPage() {
                       </SelectTrigger>
                       <SelectContent>
                         <SelectItem value="all">All Roles</SelectItem>
-                        {Object.entries(USER_ROLES).map(([value, label]) => (
-                          <SelectItem key={value} value={value}>
-                            {label}
-                          </SelectItem>
-                        ))}
+                        {Object.entries(USER_ROLES)
+                          .filter(([value]) => value !== 'student')
+                          .map(([value, label]) => (
+                            <SelectItem key={value} value={value}>
+                              {label}
+                            </SelectItem>
+                          ))}
                       </SelectContent>
                     </Select>
                   </div>
+                  )}
                 </div>
 
                 {}
@@ -452,7 +647,9 @@ export default function DepartmentDashboardPage() {
                     <h3 className="text-lg font-medium text-[#333] mb-1">
                       {searchQuery || roleFilter !== 'all'
                         ? 'No users match your search'
-                        : 'No users found'}
+                        : userTab === 'students'
+                          ? 'No student accounts yet'
+                          : 'No faculty or staff accounts yet'}
                     </h3>
                     <p className="text-sm text-gray-500 mb-4">
                       {searchQuery || roleFilter !== 'all'
@@ -465,35 +662,67 @@ export default function DepartmentDashboardPage() {
                     <table className="w-full text-sm">
                       <thead>
                         <tr className="border-b bg-gray-50 text-left">
-                          <th className="px-4 py-3 font-medium text-gray-600">SR Code</th>
-                          <th className="px-4 py-3 font-medium text-gray-600">Email</th>
-                          <th className="px-4 py-3 font-medium text-gray-600">Name</th>
-                          <th className="px-4 py-3 font-medium text-gray-600">Assigned Adviser</th>
+                          {userTab === 'students' ? (
+                            <>
+                              <th className="px-4 py-3 font-medium text-gray-600">SR Code</th>
+                              <th className="px-4 py-3 font-medium text-gray-600">Email</th>
+                              <th className="px-4 py-3 font-medium text-gray-600">Name</th>
+                              <th className="px-4 py-3 font-medium text-gray-600">Assigned Adviser</th>
+                            </>
+                          ) : (
+                            <>
+                              {
+}
+                              <th className="px-4 py-3 font-medium text-gray-600">Role</th>
+                              <th className="px-4 py-3 font-medium text-gray-600">Email</th>
+                              <th className="px-4 py-3 font-medium text-gray-600">Name</th>
+                            </>
+                          )}
                           <th className="px-4 py-3 font-medium text-gray-600">Status</th>
                           <th className="px-4 py-3 font-medium text-gray-600 text-right">Actions</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y">
-                        {filteredUsers.map((user) => (
+                        {pagedUsers.map((user) => (
                           <tr key={user.id} className="hover:bg-gray-50/50 transition-colors">
-                            <td className="px-4 py-3 text-gray-700 font-mono text-xs">
-                              {user.srCode || '—'}
-                            </td>
-                            <td className="px-4 py-3 text-gray-600">
-                              {user.email || '—'}
-                            </td>
-                            <td className="px-4 py-3">
-                              <span className="font-medium text-[#333]">
-                                {[user.firstName, user.lastName].filter(Boolean).join(' ') || '—'}
-                              </span>
-                            </td>
-                            <td className="px-4 py-3 text-gray-600">
-                              {user.assignedAdviser || (
-                                <span className="text-gray-400 italic">
-                                  {user.role === 'student' ? 'Not assigned' : '—'}
-                                </span>
-                              )}
-                            </td>
+                            {userTab === 'students' ? (
+                              <>
+                                <td className="px-4 py-3 text-gray-700 font-mono text-xs">
+                                  {user.srCode || '—'}
+                                </td>
+                                <td className="px-4 py-3 text-gray-600">
+                                  {user.email || '—'}
+                                </td>
+                                <td className="px-4 py-3">
+                                  <span className="font-medium text-[#333]">
+                                    {[user.firstName, user.lastName].filter(Boolean).join(' ') || '—'}
+                                  </span>
+                                </td>
+                                <td className="px-4 py-3 text-gray-600">
+                                  {user.assignedAdviser || (
+                                    <span className="text-gray-400 italic">
+                                      {user.role === 'student' ? 'Not assigned' : '—'}
+                                    </span>
+                                  )}
+                                </td>
+                              </>
+                            ) : (
+                              <>
+                                <td className="px-4 py-3">
+                                  <span className="inline-flex rounded-full border border-gray-200 bg-gray-50 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-gray-600">
+                                    {USER_ROLES[user.role] || user.role}
+                                  </span>
+                                </td>
+                                <td className="px-4 py-3 text-gray-600">
+                                  {user.email || '—'}
+                                </td>
+                                <td className="px-4 py-3">
+                                  <span className="font-medium text-[#333]">
+                                    {[user.firstName, user.lastName].filter(Boolean).join(' ') || '—'}
+                                  </span>
+                                </td>
+                              </>
+                            )}
                             <td className="px-4 py-3">
                               <div className="flex items-center gap-2">
                                 <button
@@ -549,10 +778,13 @@ export default function DepartmentDashboardPage() {
                         ))}
                       </tbody>
                     </table>
-                    {}
-                    <div className="border-t bg-gray-50/50 px-4 py-2 text-xs text-gray-400">
-                      Showing {filteredUsers.length} of {users.length} user{users.length !== 1 ? 's' : ''}
-                    </div>
+                    <TablePagination
+                      page={usersSafePage}
+                      perPage={USERS_PER_PAGE}
+                      total={filteredUsers.length}
+                      onChange={setUsersPage}
+                      label="user"
+                    />
                   </div>
                 )}
               </>
@@ -561,14 +793,20 @@ export default function DepartmentDashboardPage() {
             {}
             {}
             {}
-            {activePage === 'journals' && (
+            {activePage === 'journals' && !sectionAllowed('journals', permissions) && (
+              <SectionNoAccess title="Journals" permission="pages.journals" />
+            )}
+            {activePage === 'journals' && sectionAllowed('journals', permissions) && (
               <DepartmentJournals initialJournals={initialJournals} />
             )}
 
             {}
             {}
             {}
-            {activePage === 'feedback' && (
+            {activePage === 'feedback' && !sectionAllowed('feedback', permissions) && (
+              <SectionNoAccess title="Feedback" permission="pages.feedback" />
+            )}
+            {activePage === 'feedback' && sectionAllowed('feedback', permissions) && (
               <div>
                 <div className="mb-6">
                   <h1 className="text-xl sm:text-2xl font-bold text-[#333]">
@@ -582,23 +820,58 @@ export default function DepartmentDashboardPage() {
               </div>
             )}
 
+            {}
+            {}
+            {}
+            {
+}
+            {activePage === 'submissions' && !sectionAllowed('submissions', permissions) && (
+              <SectionNoAccess title="TAF Submissions" permission="approval.participate" />
+            )}
+            {activePage === 'submissions' && sectionAllowed('submissions', permissions) && (
+              <DepartmentSubmissions departmentId={urlUserId} />
+            )}
+
+            {}
+            {}
+            {}
+            {
+}
+            {activePage === 'groups' && !sectionAllowed('groups', permissions) && (
+              <SectionNoAccess title="Advisory Group" permission="groups.view" />
+            )}
+            {activePage === 'groups' && sectionAllowed('groups', permissions) && (
+              <SupervisorAdvisoryGroups
+                role="department"
+                userId={urlUserId}
+                userName={currentUser?.firstName}
+              />
+            )}
+
           </div>
         </main>
       </div>
 
       {}
-      <nav className="md:hidden flex items-center justify-around border-t bg-white px-2 py-1 safe-area-bottom">
+      <nav className="md:hidden flex items-center gap-1 overflow-x-auto border-t bg-white px-2 py-1 safe-area-bottom">
         {navItems.map((item) => (
           <button
             key={item.id}
             onClick={() => goToNavItem(item)}
-            className={`flex flex-col items-center gap-0.5 px-3 py-2 rounded-lg text-xs transition-colors ${
+            className={`flex shrink-0 flex-col items-center gap-0.5 px-3 py-2 rounded-lg text-xs transition-colors ${
               activePage === item.id
                 ? 'text-[#8B1A1A]'
                 : 'text-gray-400 hover:text-gray-600'
             }`}
           >
-            {item.icon}
+            <span className="relative">
+              {item.icon}
+              {item.id === 'notifications' && unreadCount > 0 && (
+                <span className="absolute -top-1.5 -right-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-red-500 text-[9px] font-bold text-white">
+                  {unreadCount > 9 ? '9+' : unreadCount}
+                </span>
+              )}
+            </span>
             <span className="text-[10px]">{item.label}</span>
           </button>
         ))}
@@ -616,6 +889,18 @@ export default function DepartmentDashboardPage() {
         onOpenChange={setDialogOpen}
         onCancel={handleDialogCancel}
         mode={dialogMode}
+        actorRole={currentUser?.role ?? null}
+        currentUserId={currentUser?.id ?? null}
+        permissions={
+          currentUser?.role === 'department' &&
+          editingUser?.id !== currentUser?.id
+            ? {
+                groups: permissionGroups,
+                roleDefaults,
+                overrides: editingPermissionOverrides,
+              }
+            : null
+        }
         initialData={
           editingUser
             ? {

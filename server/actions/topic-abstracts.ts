@@ -3,6 +3,9 @@
 import { createClient } from "@/server/supabase/server";
 import { getCurrentUser } from "./auth";
 import { logAudit } from "@/server/audit";
+
+// ── Types ──────────────────────────────────────────────────────────
+
 export type TopicAbstractForm = {
   id: string;
   studentId: string;
@@ -14,9 +17,8 @@ export type TopicAbstractForm = {
   referenceList: string;
   status: "draft" | "submitted" | "analyzed" | "under_review" | "approved" | "revisions_needed";
   submittedAt: string | null;
-
+  /** Whether this TAF may be deleted (draft/analyzed AND never submitted). */
   canDelete: boolean;
-
   latestScore: number | null;
   adviserFeedback: string | null;
   reviewedBy: string | null;
@@ -93,6 +95,9 @@ function mapTAF(
     updatedAt: raw.updated_at,
   };
 }
+
+// ── Create a new Topic Abstract Form (draft) ─────────────────────
+
 export async function createTopicAbstract(
   input: CreateTAFInput
 ): Promise<TAFResult> {
@@ -128,6 +133,9 @@ export async function createTopicAbstract(
 
   return { success: true, data: mapTAF(data as unknown as RawTAF) };
 }
+
+// ── Get all TAFs for the current student ─────────────────────────
+
 export async function getStudentTopicAbstracts(): Promise<TAFListResult> {
   const user = await getCurrentUser();
   if (!user) {
@@ -175,12 +183,14 @@ export async function getStudentTopicAbstracts(): Promise<TAFListResult> {
       const submitted = Array.isArray(r.group_taf_submissions)
         ? r.group_taf_submissions.length > 0
         : !!r.group_taf_submissions;
-
+      // Deletable only if draft/analyzed AND never submitted to a group.
       const canDelete = ["draft", "analyzed"].includes(r.status) && !submitted;
       return mapTAF(r as RawTAF, canDelete, scoreMap.get(r.id) ?? null);
     }),
   };
 }
+
+// Latest analysis combined score per TAF (for showing the score on cards).
 type SupabaseClient = Awaited<ReturnType<typeof createClient>>;
 async function fetchLatestScores(
   supabase: SupabaseClient,
@@ -198,13 +208,16 @@ async function fetchLatestScores(
     return map;
   }
   for (const r of (data || []) as { taf_id: string; combined_score: number | null }[]) {
-
+    // rows come newest-version-first → first occurrence per taf is the latest.
     if (!map.has(r.taf_id)) {
       map.set(r.taf_id, Number(r.combined_score) || 0);
     }
   }
   return map;
 }
+
+// ── Get a single TAF by ID (student's own) ─────────────────────
+
 export async function getTopicAbstractById(
   id: string
 ): Promise<TAFResult> {
@@ -232,6 +245,9 @@ export async function getTopicAbstractById(
 
   return { success: true, data: mapTAF(data as unknown as RawTAF) };
 }
+
+// ── Update a TAF (save draft, submit, etc.) ─────────────────────
+
 export async function updateTopicAbstract(
   input: UpdateTAFInput
 ): Promise<TAFResult> {
@@ -278,6 +294,9 @@ export async function updateTopicAbstract(
 
   return { success: true, data: mapTAF(data as unknown as RawTAF) };
 }
+
+// ── Bulk-delete TAFs (draft/analyzed only, never submitted) ───────
+
 export async function deleteTopicAbstracts(
   ids: string[]
 ): Promise<{ success: true; deleted: number } | { success: false; error: string }> {
@@ -293,6 +312,7 @@ export async function deleteTopicAbstracts(
   }
 
   const supabase = await createClient();
+
   const { data: submitted } = await supabase
     .from("group_taf_submissions")
     .select("taf_id")
@@ -308,6 +328,7 @@ export async function deleteTopicAbstracts(
       error: "The selected form(s) have been submitted and cannot be deleted.",
     };
   }
+
   const { data: deletableRows } = await supabase
     .from("topic_abstract_forms")
     .select("id, proposed_title")
@@ -328,6 +349,7 @@ export async function deleteTopicAbstracts(
     console.error("Error bulk-deleting topic abstracts:", error);
     return { success: false, error: "Failed to delete the selected forms. Please try again." };
   }
+
   for (const t of deletedTitles) {
     await logAudit({
       action: "taf_deleted",
@@ -340,6 +362,9 @@ export async function deleteTopicAbstracts(
 
   return { success: true, deleted: deletable.length };
 }
+
+// ── Delete a TAF (draft/analyzed only, never submitted) ───────────
+
 export async function deleteTopicAbstract(
   id: string
 ): Promise<{ success: true } | { success: false; error: string }> {
@@ -352,6 +377,7 @@ export async function deleteTopicAbstract(
   }
 
   const supabase = await createClient();
+
   const { data: submitted } = await supabase
     .from("group_taf_submissions")
     .select("id")
@@ -365,6 +391,13 @@ export async function deleteTopicAbstract(
     };
   }
 
+  const { data: doomed } = await supabase
+    .from("topic_abstract_forms")
+    .select("proposed_title")
+    .eq("id", id)
+    .eq("student_id", user.id)
+    .maybeSingle();
+
   const { error } = await supabase
     .from("topic_abstract_forms")
     .delete()
@@ -376,6 +409,16 @@ export async function deleteTopicAbstract(
     console.error("Error deleting topic abstract:", error);
     return { success: false, error: "Failed to delete topic abstract form. Only drafts can be deleted." };
   }
+
+  const title = (doomed?.proposed_title as string) || "Untitled";
+  await logAudit({
+    action: "taf_deleted",
+    category: "deletion",
+    entityType: "taf",
+    entityId: id,
+    entityLabel: title,
+    description: `Deleted topic abstract form "${title}".`,
+  });
 
   return { success: true };
 }

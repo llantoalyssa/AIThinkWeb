@@ -5,7 +5,18 @@ import { useRouter } from "next/navigation";
 import { Loader2, LogOut } from "lucide-react";
 import { createClient } from "@/server/supabase/client";
 import { rolePath, formatName } from "@/lib/constants";
-import { type CurrentUser } from "@/server/actions/auth";
+import { logout, type CurrentUser } from "@/server/actions/auth";
+
+/**
+ * Reusable top-right user menu. Every dashboard page renders this so the
+ * user can always reach their Profile page and sign out, regardless of role.
+ *
+ * Props:
+ * - user: the authenticated user (or null while loading/auth fails)
+ * - userId: id used to build the profile/role links
+ * - forceNavigate: passed from pages that already call router.replace on auth
+ *   failure (they can leave this undefined)
+ */
 export function UserMenu({
   user,
   userId,
@@ -13,7 +24,7 @@ export function UserMenu({
 }: {
   user: CurrentUser | null;
   userId: string;
-  routeBase: string;
+  routeBase: string; // e.g. "/dashboard/student" — hyphens for associate-dean
 }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
@@ -44,13 +55,37 @@ export function UserMenu({
 
   async function handleSignOut() {
     setSigningOut(true);
-    const { error } = await createClient().auth.signOut();
-    setSigningOut(false);
-    if (error) {
-      console.error("[user-menu] sign out error:", error.message);
-      return;
+
+    /**
+     * Go through the SERVER action, not the browser client.
+     *
+     * `createClient().auth.signOut()` here cleared the session without ever
+     * touching the audit trail — the only sign-outs that were being recorded
+     * were the ones made from a Profile page (which call logout()). This is the
+     * header menu, i.e. how nearly everyone actually signs out.
+     *
+     * `logout()` writes the audit row FIRST (afterwards there is no session to
+     * attribute it to) and then clears the session server-side, which also
+     * clears the cookies.
+     */
+    const result = await logout();
+
+    if (!result.success) {
+      // Never leave the user stuck signed in because auditing failed — fall
+      // back to the client sign-out and report it.
+      console.error("[user-menu] logout action failed:", result.error);
+      const { error } = await createClient().auth.signOut();
+      if (error) {
+        console.error("[user-menu] sign out error:", error.message);
+        setSigningOut(false);
+        return;
+      }
     }
+
+    setSigningOut(false);
     router.replace("/login");
+    // Drop any cached RSC payload for the authenticated pages.
+    router.refresh();
   }
 
   return (

@@ -1,4 +1,5 @@
 "use client";
+
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Filter, RotateCcw, Search } from "lucide-react";
@@ -48,6 +49,9 @@ export default function AuditFilters({ userId, initial }: Props) {
     setTo("");
     router.push(base);
   }
+
+  // Action options narrow to the chosen category, so the two selectors can't
+  // contradict each other.
   const actionOptions = category
     ? ACTION_OPTIONS.filter((o) => o.category === category)
     : ACTION_OPTIONS;

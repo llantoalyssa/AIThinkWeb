@@ -73,7 +73,7 @@ export default function AnnotatedSection({
   useEffect(() => {
     function handleJump(e: Event) {
       const detail = (e as CustomEvent).detail as
-        | { fieldKey?: AnnotationFieldKey; snippet?: string }
+        | { fieldKey?: AnnotationFieldKey; snippet?: string; handled?: boolean }
         | undefined;
       if (!detail || detail.fieldKey !== fieldKey) return;
       const el = rootRef.current;
@@ -98,18 +98,31 @@ export default function AnnotatedSection({
               want.startsWith(have.slice(0, 12))
             );
           }) ||
-          (marks.length === 1 ? marks[0] : undefined);
+          marks[0];
         if (target) {
+          detail.handled = true;
           target.scrollIntoView({ behavior: "smooth", block: "center" });
           target.classList.add("annotation-pulse");
           setTimeout(() => target.classList.remove("annotation-pulse"), 2200);
           return;
         }
-        window.dispatchEvent(
-          new CustomEvent("annotation-jump-miss", {
-            detail: { fieldKey, snippet },
-          }),
-        );
+        const sectionText = normalizeText(el.textContent || "").toLowerCase();
+        const snippetText = normalizeText(snippet).toLowerCase();
+        const anchorStillPresent =
+          snippetText.length > 0 && sectionText.includes(snippetText);
+
+        if (!anchorStillPresent) {
+
+          const sharedDetail = detail;
+          setTimeout(() => {
+            if (sharedDetail.handled) return;
+            window.dispatchEvent(
+              new CustomEvent("annotation-jump-miss", {
+                detail: { fieldKey, snippet },
+              }),
+            );
+          }, 0);
+        }
       }
 
       el.scrollIntoView({ behavior: "smooth", block: "center" });

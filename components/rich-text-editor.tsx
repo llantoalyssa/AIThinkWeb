@@ -27,6 +27,8 @@ type Props = {
   readOnly?: boolean;
   placeholder?: string;
   minHeight?: string;
+
+  className?: string;
 };
 
 function ToolbarButton({
@@ -68,6 +70,8 @@ export default function RichTextEditor({
   readOnly = false,
   placeholder = "Write something...",
   minHeight = "120px",
+
+  className,
 }: Props) {
 
   const lastPushed = useRef<string>(value || "");
@@ -128,7 +132,8 @@ export default function RichTextEditor({
     <div
       className={cn(
         "rounded-lg border border-gray-200 bg-white transition-colors focus-within:border-[#8B1A1A]/40 focus-within:ring-2 focus-within:ring-[#8B1A1A]/10",
-        readOnly && "bg-gray-50/50"
+        readOnly && "bg-gray-50/50",
+        className
       )}
     >
       {!readOnly && (

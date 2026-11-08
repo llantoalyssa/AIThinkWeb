@@ -1,5 +1,7 @@
 "use server";
+
 import { getCurrentUser, type CurrentUser } from "./auth";
+import { getGrantedPermissions } from "./permissions";
 import {
   getMyNotifications,
   getPendingApprovals,
@@ -9,6 +11,8 @@ import {
 import {
   getAdviserAdvisoryGroups,
   getAdviserTotalStudents,
+  getGroupMemberCounts,
+  getGroupPendingCounts,
   getAdviserGroupBySlug,
   getAdviserGroupStudents,
   type AdvisoryGroup,
@@ -20,6 +24,8 @@ import {
   type GroupSubmission,
   type SubmissionWithAnalysis,
 } from "./group-submissions";
+
+
 export type AdviserDashboardData =
   | {
       success: true;
@@ -27,19 +33,35 @@ export type AdviserDashboardData =
       unreadCount: number;
       groups: AdvisoryGroup[];
       totalStudents: number | null;
+      /** Joined-student count per group id, for the cards. */
+      memberCounts: Record<string, number>;
+      /** Pending-TAF count per group id, for the cards' badges. */
+      pendingByGroup: Record<string, number>;
       pendingApprovals: ApprovalListItem[];
+
+      permissions: string[];
     }
   | { success: false; error: string };
 
 export async function getAdviserDashboardData(): Promise<AdviserDashboardData> {
-  const [user, notifications, groupsResult, studentsResult, pendingResult] =
-    await Promise.all([
-      getCurrentUser(),
-      getMyNotifications(),
-      getAdviserAdvisoryGroups(),
-      getAdviserTotalStudents(),
-      getPendingApprovals(),
-    ]);
+
+  const [
+    user,
+    notifications,
+    groupsResult,
+    studentsResult,
+    pendingResult,
+    memberCountsResult,
+    pendingGroupsResult,
+  ] = await Promise.all([
+    getCurrentUser(),
+    getMyNotifications(),
+    getAdviserAdvisoryGroups(),
+    getAdviserTotalStudents(),
+    getPendingApprovals(),
+    getGroupMemberCounts(),
+    getGroupPendingCounts(),
+  ]);
 
   if (!user) return { success: false, error: "You must be logged in." };
 
@@ -51,9 +73,16 @@ export async function getAdviserDashboardData(): Promise<AdviserDashboardData> {
       : 0,
     groups: groupsResult.success ? groupsResult.data : [],
     totalStudents: studentsResult.success ? studentsResult.count : null,
+    memberCounts: memberCountsResult.success ? memberCountsResult.counts : {},
+    pendingByGroup: pendingGroupsResult.success ? pendingGroupsResult.counts : {},
     pendingApprovals: pendingResult.success ? pendingResult.data : [],
+
+    permissions: await getGrantedPermissions(user.id),
   };
 }
+
+
+
 export type AdviserNotificationsData =
   | {
       success: true;
@@ -87,12 +116,13 @@ export async function getAdviserNotificationsData(): Promise<AdviserNotification
     pendingError: pending.success ? null : pending.error,
   };
 }
+
+
 export type AdviserGroupData =
   | {
       success: true;
       user: CurrentUser;
       unreadCount: number;
-
       group: AdvisoryGroup | null;
       students: GroupStudent[];
       submissions: GroupSubmission[];
@@ -124,6 +154,8 @@ export async function getAdviserGroupData(
       submissions: [],
     };
   }
+
+  // Students + submissions both only need the group id — parallel.
   const [studentsResult, submissionsResult] = await Promise.all([
     getAdviserGroupStudents(groupResult.data.id),
     getGroupSubmissions(groupResult.data.id),
@@ -138,6 +170,7 @@ export async function getAdviserGroupData(
     submissions: submissionsResult.success ? submissionsResult.data : [],
   };
 }
+
 export type AdviserSubmissionData =
   | {
       success: true;

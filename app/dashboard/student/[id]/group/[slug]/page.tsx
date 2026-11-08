@@ -24,7 +24,6 @@ import StudentGroupDetailPage from "./group-detail-client";
 export default async function StudentGroupDetailRoute({
   params,
 }: {
-  // Next 15: route params are async.
   params: Promise<{ id: string; slug: string }>;
 }) {
   const { id, slug } = await params;
@@ -35,7 +34,6 @@ export default async function StudentGroupDetailRoute({
     getUserRecentTAFs(),
   ]);
 
-  // Access checks live here now (these used to run in the client).
   if (!shell.success) redirect("/login");
   if (shell.user.role !== "student") {
     redirect(`/dashboard/${shell.user.role}/${shell.user.id}`);
@@ -43,13 +41,10 @@ export default async function StudentGroupDetailRoute({
   if (shell.user.id !== id) {
     redirect(`/dashboard/student/${shell.user.id}/group/${slug}`);
   }
-  // Unknown / not-a-member group: back to the group entry route.
   if (!groupResult.success) {
     redirect(`/dashboard/student/${id}/group`);
   }
 
-  // The roster and the submissions list both key off the group id, so they
-  // form a second parallel wave.
   const groupId = groupResult.data.groupId;
   const [members, submissions] = await Promise.all([
     getStudentGroupMembers(groupId),
@@ -63,7 +58,6 @@ export default async function StudentGroupDetailRoute({
       initialGroup={groupResult.data}
       initialMembers={members.success ? members.data : []}
       initialSubmissions={submissions.success ? submissions.data : []}
-      // On failure pass nothing so the child keeps its own fetch fallback.
       initialRecents={recents.success ? recents.data : undefined}
     />
   );

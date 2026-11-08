@@ -4,7 +4,10 @@ import { createClient } from "@/server/supabase/server";
 import { createAdminClient } from "@/server/supabase/admin";
 import { logAudit } from "@/server/audit";
 import { getCurrentUser } from "./auth";
-import { type UserRole } from "@/lib/constants";
+import { ALLOWED_EMAIL_DOMAIN, type UserRole } from "@/lib/constants";
+
+// ── Types ──────────────────────────────────────────────────
+
 export type DepartmentUser = {
   id: string;
   email: string;
@@ -15,7 +18,9 @@ export type DepartmentUser = {
   srCode: string;
   role: UserRole;
   isActive: boolean;
-  assignedAdviser: string | null;
+  assignedAdviser: string | null; // Adviser name if student and in a group
+  registeredAt: string | null;
+  avatarUrl: string | null;
 };
 
 export type CreateUserInput = {
@@ -43,6 +48,9 @@ export type UpdateUserInput = {
 export type DepartmentResult<T> =
   | { success: true; data: T }
   | { success: false; error: string };
+
+// ── Helper ──────────────────────────────────────────────────
+
 const ROLES: UserRole[] = [
   "student",
   "adviser",
@@ -54,6 +62,9 @@ const ROLES: UserRole[] = [
 
 const DEPARTMENT_NAME_RE = /^[\p{L} .'-]+$/u;
 const DEPARTMENT_MIDDLE_RE = /^[\p{L}]{1,2}\.?$/u;
+
+// ── Get all users (department only) ─────────────────────────
+
 export async function getAllUsers(): Promise<
   DepartmentResult<DepartmentUser[]>
 > {
@@ -68,9 +79,13 @@ export async function getAllUsers(): Promise<
   }
 
   const supabase = await createClient();
+
+  // 1. Fetch all profiles (email now stored directly in profiles)
   const { data: profiles, error: profilesError } = await supabase
     .from("profiles")
-    .select("id, email, first_name, last_name, middle_initial, suffix, sr_code, role, is_active, updated_at")
+    .select(
+      "id, email, first_name, last_name, middle_initial, suffix, sr_code, role, is_active, updated_at, created_at, avatar_url",
+    )
     .order("last_name", { ascending: true });
 
   if (profilesError) {
@@ -81,6 +96,8 @@ export async function getAllUsers(): Promise<
   if (!profiles || profiles.length === 0) {
     return { success: true, data: [] };
   }
+
+  // 2. Fetch group memberships for all students to get adviser info
   const { data: memberships, error: membershipsError } = await supabase
     .from("student_group_memberships")
     .select("student_id, group_id, advisory_groups!inner(adviser_id, name)");
@@ -88,6 +105,8 @@ export async function getAllUsers(): Promise<
   if (membershipsError) {
     console.error("Error fetching memberships:", membershipsError);
   }
+
+  // Build a map: student_id -> { adviserId, groupName }
   type MembershipInfo = { adviserId: string; groupName: string };
   const studentGroupMap = new Map<string, MembershipInfo>();
 
@@ -105,6 +124,8 @@ export async function getAllUsers(): Promise<
       }
     }
   }
+
+  // 4. Fetch adviser names for all adviser IDs found
   const adviserIds = Array.from(studentGroupMap.values()).map((m) => m.adviserId);
   const adviserNameMap = new Map<string, string>();
 
@@ -122,6 +143,8 @@ export async function getAllUsers(): Promise<
       }
     }
   }
+
+  // 5. Merge everything
   const users: DepartmentUser[] = profiles.map((profile) => {
     const pid = profile.id as string;
     const membership = studentGroupMap.get(pid);
@@ -141,12 +164,17 @@ export async function getAllUsers(): Promise<
       srCode: (profile as any).sr_code || "",
       role: ((profile as any).role as UserRole) || "student",
       isActive: (profile as any).is_active !== false,
+      registeredAt: (profile as any).created_at || null,
+      avatarUrl: (profile as any).avatar_url || null,
       assignedAdviser,
     };
   });
 
   return { success: true, data: users };
 }
+
+// ── Create user (department only) ───────────────────────────
+
 export async function createUser(
   input: CreateUserInput
 ): Promise<DepartmentResult<{ userId: string; createdInactive?: boolean }>> {
@@ -159,6 +187,8 @@ export async function createUser(
   if (user.role !== "department") {
     return { success: false, error: "Only department accounts can create users." };
   }
+
+  // Validation
   if (!input.firstName || input.firstName.trim().length < 2) {
     return { success: false, error: "First name must be at least 2 characters." };
   }
@@ -177,6 +207,18 @@ export async function createUser(
   if (!input.email || !input.email.endsWith("@g.batstate-u.edu.ph")) {
     return { success: false, error: "Only @g.batstate-u.edu.ph email addresses are allowed." };
   }
+  const studentSrCode = input.srCode?.trim() ?? "";
+  if (input.role === "student") {
+    if (!studentSrCode) {
+      return { success: false, error: "SR code is required for a student account." };
+    }
+    if (input.email.split("@")[0].toLowerCase() !== studentSrCode.toLowerCase()) {
+      return {
+        success: false,
+        error: `The email must match the SR code (e.g. ${studentSrCode}@g.batstate-u.edu.ph).`,
+      };
+    }
+  }
   if (!input.password || input.password.length < 8) {
     return { success: false, error: "Password must be at least 8 characters." };
   }
@@ -191,6 +233,7 @@ export async function createUser(
         "User creation needs SUPABASE_SERVICE_ROLE_KEY. Add it to the server env (.env.local and Vercel), then retry.",
     };
   }
+
   const email = input.email.toLowerCase().trim();
   const role = input.role;
   const requestedActive = input.isActive ?? true;
@@ -246,7 +289,6 @@ export async function createUser(
       last_name: input.lastName.trim(),
       middle_initial: input.middleInitial?.trim() || null,
       suffix: input.suffix?.trim() || null,
-
       sr_code: (input.srCode && input.srCode.trim()) || null,
       role,
       is_active: effectiveActive,
@@ -256,11 +298,9 @@ export async function createUser(
   );
   if (profErr) {
     console.error("[createUser] Failed to ensure profile:", profErr);
-
     if (userId) {
       await admin.auth.admin.deleteUser(userId).catch(() => {});
     }
-
     const msg = profErr.message || "";
     if (msg.includes("profiles_sr_code_key") || msg.toLowerCase().includes("sr_code")) {
       return {
@@ -273,6 +313,7 @@ export async function createUser(
       error: `Account was rolled back because the profile could not be saved: ${msg}`,
     };
   }
+
   await logAudit({
     action: "account_created",
     entityType: "user",
@@ -290,6 +331,9 @@ export async function createUser(
 
   return { success: true, data: { userId, createdInactive: !effectiveActive } };
 }
+
+// ── Update user (department only) ───────────────────────────
+
 export async function updateUser(
   userId: string,
   input: UpdateUserInput
@@ -303,6 +347,7 @@ export async function updateUser(
   if (user.role !== "department") {
     return { success: false, error: "Only department accounts can update users." };
   }
+
   if (userId === user.id) {
     return {
       success: false,
@@ -342,6 +387,9 @@ export async function updateUser(
 
   return { success: true, data: null };
 }
+
+// ── Delete user (department only) ───────────────────────────
+
 export async function deleteUser(
   userId: string
 ): Promise<DepartmentResult<null>> {
@@ -354,6 +402,7 @@ export async function deleteUser(
   if (user.role !== "department") {
     return { success: false, error: "Only department accounts can delete users." };
   }
+
   if (userId === user.id) {
     return { success: false, error: "You cannot delete your own account." };
   }
@@ -377,4 +426,161 @@ export async function deleteUser(
   }
 
   return { success: true, data: null };
+}
+
+
+export type BulkStudentInput = {
+  /** 1-based CSV line, echoed back so the report can point at the bad row. */
+  line: number;
+  srCode: string;
+  firstName: string;
+  middleInitial?: string;
+  lastName: string;
+  suffix?: string;
+  /** Optional: derived from the SR code when blank. */
+  email?: string;
+  /** Optional: a temporary password is generated when blank. */
+  password?: string;
+};
+
+export type BulkStudentResult = {
+  line: number;
+  srCode: string;
+  email: string;
+  name: string;
+  status: "created" | "failed";
+  error?: string;
+  password?: string;
+};
+
+export type BulkStudentsData = {
+  created: number;
+  failed: number;
+  results: BulkStudentResult[];
+};
+
+const BULK_MAX_ROWS = 500;
+const SR_CODE_RE = /^\d{2}-\d{5}$/;
+
+/** "2393627" / "23-93627" → "23-93627" */
+function normaliseSrCode(raw: string): string {
+  const digits = (raw || "").replace(/\D/g, "").slice(0, 7);
+  if (digits.length !== 7) return (raw || "").trim();
+  return `${digits.slice(0, 2)}-${digits.slice(2)}`;
+}
+
+/** A readable temporary password (no ambiguous 0/O/1/I). */
+function tempPassword(): string {
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  const bytes = crypto.getRandomValues(new Uint8Array(8));
+  return `Ai${Array.from(bytes, (b) => alphabet[b % alphabet.length]).join("")}`;
+}
+
+export async function bulkCreateStudents(
+  inputs: BulkStudentInput[],
+): Promise<DepartmentResult<BulkStudentsData>> {
+  const actor = await getCurrentUser();
+  if (!actor) return { success: false, error: "You must be logged in." };
+  if (actor.role !== "department") {
+    return { success: false, error: "Only department accounts can create users." };
+  }
+  if (!Array.isArray(inputs) || inputs.length === 0) {
+    return { success: false, error: "The file has no rows." };
+  }
+  if (inputs.length > BULK_MAX_ROWS) {
+    return {
+      success: false,
+      error: `Too many rows (${inputs.length}). Split the file into batches of ${BULK_MAX_ROWS} or fewer.`,
+    };
+  }
+
+  const results: BulkStudentResult[] = [];
+  const seen = new Set<string>();
+
+  for (const input of inputs) {
+    const srCode = normaliseSrCode(input.srCode);
+    const firstName = (input.firstName || "").trim();
+    const lastName = (input.lastName || "").trim();
+    const name = [firstName, lastName].filter(Boolean).join(" ") || "—";
+    const email = (input.email || "")
+      .trim()
+      .toLowerCase() || `${srCode.toLowerCase()}${ALLOWED_EMAIL_DOMAIN}`;
+    const password = (input.password || "").trim() || tempPassword();
+
+    const fail = (error: string) => {
+      results.push({ line: input.line, srCode, email, name, status: "failed", error });
+    };
+
+    if (!SR_CODE_RE.test(srCode)) {
+      fail("SR code must look like 23-93627 (2 digits, dash, 5 digits).");
+      continue;
+    }
+    if (!firstName || !lastName) {
+      fail("First name and last name are both required.");
+      continue;
+    }
+    if (email.split("@")[0] !== srCode.toLowerCase()) {
+      fail(`Email must match the SR code (${srCode.toLowerCase()}${ALLOWED_EMAIL_DOMAIN}).`);
+      continue;
+    }
+    const key = email;
+    if (seen.has(key)) {
+      fail("Duplicate row — this email appears twice in the file.");
+      continue;
+    }
+    seen.add(key);
+    if (password.length < 8) {
+      fail("Password must be at least 8 characters.");
+      continue;
+    }
+
+    const created = await createUser({
+      firstName,
+      lastName,
+      middleInitial: input.middleInitial?.trim() || undefined,
+      suffix: input.suffix?.trim() || undefined,
+      srCode,
+      email,
+      password,
+      role: "student",
+      isActive: true,
+    });
+
+    if (created.success) {
+      results.push({
+        line: input.line,
+        srCode,
+        email,
+        name,
+        status: "created",
+        password,
+      });
+    } else {
+      fail(created.error);
+    }
+  }
+
+  const createdCount = results.filter((r) => r.status === "created").length;
+
+  await logAudit({
+    action: "account_created",
+    entityType: "user",
+    entityId: null,
+    entityLabel: `bulk upload (${createdCount} student${createdCount === 1 ? "" : "s"})`,
+    description: `Bulk-registered ${createdCount} student account(s) from a CSV file.`,
+    metadata: {
+      count: createdCount,
+      failed: results.length - createdCount,
+      lines: results.map((r) => r.line),
+    },
+  });
+
+  return {
+    success: true,
+    data: {
+      created: createdCount,
+      failed: results.length - createdCount,
+      results,
+    },
+  };
 }

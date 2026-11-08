@@ -1,5 +1,6 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { toast } from "sonner";
 import { usePathname } from "next/navigation";
 import {
   Bell,
@@ -11,12 +12,13 @@ import {
   Loader2,
 } from "lucide-react";
 import {
-  getMyNotifications,
   markNotificationsRead,
   markAllNotificationsRead,
   type ApprovalNotification,
 } from "@/server/actions/approval-workflow";
+import { getNotificationBellShell } from "@/server/actions/approver-shell";
 const MAX_VISIBLE = 5;
+export type NotificationHrefContext = { ownedGroupSlug?: string };
 
 type Props = {
 
@@ -24,8 +26,11 @@ type Props = {
 
   allHref: string;
 
-  hrefFor: (n: ApprovalNotification) => string | null;
+  hrefFor: (n: ApprovalNotification, ctx: NotificationHrefContext) => string | null;
   initialNotifications?: ApprovalNotification[];
+  withOwnedGroupSlugs?: boolean;
+
+  initialOwnedGroupSlugs?: Record<string, string>;
 };
 
 export default function NotificationBell({
@@ -33,10 +38,16 @@ export default function NotificationBell({
   allHref,
   hrefFor,
   initialNotifications,
+  withOwnedGroupSlugs = false,
+  initialOwnedGroupSlugs,
 }: Props) {
   const pathname = usePathname();
   const [notifs, setNotifs] = useState<ApprovalNotification[]>(
     initialNotifications ?? [],
+  );
+
+  const [ownedGroupSlugs, setOwnedGroupSlugs] = useState<Record<string, string>>(
+    initialOwnedGroupSlugs ?? {},
   );
   const [loading, setLoading] = useState(!initialNotifications);
   const [open, setOpen] = useState(false);
@@ -44,16 +55,22 @@ export default function NotificationBell({
   const didInitialLoad = useRef(false);
 
   const refresh = useCallback(async () => {
-    const res = await getMyNotifications();
-    if (res.success) setNotifs(res.data);
+    const res = await getNotificationBellShell(withOwnedGroupSlugs);
+    if (res.success) {
+      setNotifs(res.notifications);
+      setOwnedGroupSlugs(res.ownedGroupSlugs);
+    }
     setLoading(false);
-  }, []);
+  }, [withOwnedGroupSlugs]);
   useEffect(() => {
     let cancelled = false;
     async function load() {
-      const res = await getMyNotifications();
+      const res = await getNotificationBellShell(withOwnedGroupSlugs);
       if (cancelled) return;
-      if (res.success) setNotifs(res.data);
+      if (res.success) {
+        setNotifs(res.notifications);
+        setOwnedGroupSlugs(res.ownedGroupSlugs);
+      }
       setLoading(false);
     }
     if (!didInitialLoad.current && initialNotifications) {
@@ -65,7 +82,7 @@ export default function NotificationBell({
     return () => {
       cancelled = true;
     };
-  }, [pathname, initialNotifications]);
+  }, [pathname, initialNotifications, withOwnedGroupSlugs]);
   useEffect(() => {
     function onFocus() {
       void refresh();
@@ -93,7 +110,19 @@ export default function NotificationBell({
 
   async function openNotification(n: ApprovalNotification) {
     setOpen(false);
-    const href = hrefFor(n);
+    if (n.groupArchived) {
+      toast.info("This advisory group has been archived", {
+        description:
+          "Its TAF is paused until the adviser unarchives the group — you can open it again after that.",
+      });
+      return;
+    }
+
+    const href = hrefFor(n, {
+      ownedGroupSlug: n.submissionId
+        ? ownedGroupSlugs[n.submissionId]
+        : undefined,
+    });
     if (!n.readAt) {
       setNotifs((prev) =>
         prev.map((x) =>
@@ -154,8 +183,10 @@ export default function NotificationBell({
         )}
       </button>
 
+      {
+}
       {open && (
-        <div className="absolute right-0 top-12 z-50 w-80 max-w-[calc(100vw-2rem)] rounded-xl border border-gray-200 bg-white shadow-2xl overflow-hidden">
+        <div className="absolute right-0 top-12 z-50 -mr-3 w-80 max-w-[calc(100vw-2rem)] overflow-hidden rounded-xl border border-gray-200 bg-white shadow-2xl sm:mr-0">
           <div className="flex items-center justify-between border-b px-4 py-2.5">
             <p className="text-sm font-semibold text-[#333]">Notifications</p>
             {unreadCount > 0 && (
@@ -221,7 +252,7 @@ export default function NotificationBell({
                   </span>
                   <span className="min-w-0 flex-1">
                     <span
-                      className={`block text-sm ${
+                      className={`block text-sm line-clamp-2 ${
                         !n.readAt ? "text-[#333] font-bold" : "text-gray-500"
                       }`}
                     >

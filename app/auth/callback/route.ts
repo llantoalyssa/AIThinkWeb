@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/server/supabase/server";
-import { ROLE_DASHBOARD_ROUTES, ALLOWED_EMAIL_DOMAIN, type UserRole } from "@/lib/constants";
+import { createAdminClient } from "@/server/supabase/admin";
+import { roleLandingPath, ALLOWED_EMAIL_DOMAIN, type UserRole } from "@/lib/constants";
 
 export async function GET(request: Request) {
   const { searchParams, origin } = new URL(request.url);
@@ -43,8 +44,7 @@ export async function GET(request: Request) {
           .maybeSingle();
 
         if (!existing.data) {
-
-          await supabase.from("profiles").insert({
+          const insertPayload = {
             id: user.id,
             email: email || null,
             first_name: firstName || null,
@@ -54,9 +54,34 @@ export async function GET(request: Request) {
             sr_code: null,
             role: "student",
             avatar_url: avatarUrl,
-          });
+          };
+          const { error: insertError } = await supabase
+            .from("profiles")
+            .insert(insertPayload);
+          if (insertError) {
+            console.error(
+              "[auth/callback] profile insert failed for",
+              user.id,
+              "—",
+              insertError.code,
+              insertError.message,
+            );
+            const admin = createAdminClient();
+            if (admin) {
+              const { error: repairError } = await admin
+                .from("profiles")
+                .insert(insertPayload);
+              if (repairError && repairError.code !== "23505") {
+                console.error(
+                  "[auth/callback] service-role profile repair failed:",
+                  repairError.code,
+                  repairError.message,
+                );
+              }
+            }
+          }
         } else {
-
+          // Fill only empty fields (never overwrite user-edited values).
           const patch: Record<string, unknown> = {};
           if (!existing.data.first_name && firstName)
             patch.first_name = firstName;
@@ -71,20 +96,36 @@ export async function GET(request: Request) {
               .eq("id", user.id);
           }
         }
-        const { data: profile } = await supabase
+
+        const adminForRead = createAdminClient();
+        const profileClient = adminForRead ?? supabase;
+        const { data: profile, error: profileError } = await profileClient
           .from("profiles")
           .select("role")
           .eq("id", user.id)
-          .single();
+          .maybeSingle();
 
-        const role = (profile?.role as UserRole) || "student";
-        const dashboardRoute = ROLE_DASHBOARD_ROUTES[role];
+        if (profileError || !profile) {
+          console.error(
+            "[auth/callback] no profile for",
+            user.id,
+            "—",
+            profileError?.code ?? "row missing",
+            profileError?.message ?? "",
+          );
+          await supabase.auth.signOut();
+          return NextResponse.redirect(`${origin}/login?profile=1`);
+        }
 
-        return NextResponse.redirect(`${origin}${dashboardRoute}/${user.id}`);
+        const role = profile.role as UserRole;
+
+        return NextResponse.redirect(`${origin}${roleLandingPath(role, user.id)}`);
       }
-
+      // Fallback if user not immediately available
       return NextResponse.redirect(`${origin}${next}`);
     }
   }
+
+  // return the user to an error page with instructions
   return NextResponse.redirect(`${origin}/auth/auth-code-error`);
 }

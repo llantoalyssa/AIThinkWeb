@@ -1,5 +1,6 @@
 "use client";
 
+
 import { Suspense, useEffect, useRef, useState, type FormEvent } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
@@ -44,6 +45,7 @@ function UpdatePasswordForm() {
       const tokenHash = searchParams.get("token_hash");
       const otpType = searchParams.get("type");
       const code = searchParams.get("code");
+
       if (tokenHash && otpType) {
         const { error } = await supabase.auth.verifyOtp({
           type: otpType as EmailOtpType,
@@ -63,10 +65,10 @@ function UpdatePasswordForm() {
         }
         setSessionOk(true);
         setVerifying(false);
-
         router.replace("/auth/update-password", { scroll: false });
         return;
       }
+
       if (code) {
         const { error } = await supabase.auth.exchangeCodeForSession(code);
         doneRef.current = true;
@@ -89,7 +91,9 @@ function UpdatePasswordForm() {
         router.replace("/auth/update-password", { scroll: false });
         return;
       }
-      await Promise.resolve();
+
+      // ── No usable params ──
+      await Promise.resolve(); // keep first statement an await (lint safety)
       if (cancelled) return;
       setSessionOk(false);
       setVerifying(false);
@@ -121,10 +125,12 @@ function UpdatePasswordForm() {
       setError(result.error);
       return;
     }
+
+    // Clear the recovery session so the next sign-in starts fresh.
     try {
       await createClient().auth.signOut();
     } catch {
-
+      // ignore — best effort
     }
 
     setSubmitting(false);

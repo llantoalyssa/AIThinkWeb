@@ -2,20 +2,82 @@
 
 import { createClient } from "@/server/supabase/server";
 import { getCurrentUser } from "@/server/actions/auth";
+import { getMyGrantedPermissions } from "@/server/actions/permissions";
 import { formatName } from "@/lib/constants";
+import { logAudit } from "@/server/audit";
+import { createAdminClient } from "@/server/supabase/admin";
+
+
+async function submissionGroupArchived(submissionId: string): Promise<boolean> {
+  try {
+    const admin = createAdminClient();
+    const client = admin ?? (await createClient());
+    const { data: sub } = await client
+      .from("group_taf_submissions")
+      .select("group_id")
+      .eq("id", submissionId)
+      .maybeSingle();
+    const groupId = (sub as { group_id?: string } | null)?.group_id;
+    if (!groupId) return false;
+    const { data: group } = await client
+      .from("advisory_groups")
+      .select("is_active")
+      .eq("id", groupId)
+      .maybeSingle();
+    return (group as { is_active?: boolean } | null)?.is_active === false;
+  } catch (err) {
+    console.error("[approval-workflow] archived-group check failed:", err);
+    return false;
+  }
+}
+
+
+async function archivedGroupIds(): Promise<Set<string>> {
+  try {
+    const admin = createAdminClient();
+    if (!admin) return new Set();
+    const { data } = await admin
+      .from("advisory_groups")
+      .select("id")
+      .eq("is_active", false);
+    return new Set((data || []).map((g) => g.id as string));
+  } catch (err) {
+    console.error("[approval-workflow] archived-group lookup failed:", err);
+    return new Set();
+  }
+}
+
+const ARCHIVED_GROUP_ERROR =
+  "This advisory group has been archived, so its submissions are read-only. The adviser can unarchive it to reopen the approval.";
+
+// ── Types ──────────────────────────────────────────────────────────
+
 export type ApproverRole = "adviser" | "associate_dean" | "dean" | "vcrdes";
+
 const APPROVER_CHAIN: ApproverRole[] = [
   "adviser",
   "associate_dean",
   "dean",
   "vcrdes",
 ];
+
+/** 1-based index of each approver role in the chain. */
 const ROLE_STEP: Record<ApproverRole, number> = {
   adviser: 1,
   associate_dean: 2,
   dean: 3,
   vcrdes: 4,
 };
+
+/** Display label of each CHAIN step (never of the caller's role). */
+const STEP_LABEL: Record<ApproverRole, string> = {
+  adviser: "Adviser",
+  associate_dean: "Associate Dean",
+  dean: "Dean",
+  vcrdes: "VCRDES",
+};
+
+
 async function applyTafWorkflowUpdate(
   submissionId: string,
   updates: Record<string, unknown>,
@@ -47,7 +109,7 @@ export type ApprovalListItem = {
   studentName: string;
   studentSrCode: string;
   currentApproverRole: ApproverRole | null;
-
+  /** Academic year like "2025-2026" derived from submittedAt. */
   academicYear: string;
 };
 
@@ -66,7 +128,12 @@ export type ReturnResult =
 export type ResubmitResult =
   | { success: true; message: string }
   | { success: false; error: string };
+
+// ── Helpers ────────────────────────────────────────────────────────
+
 type SubmissionRow = Record<string, unknown>;
+
+/** Find the active user id for an approver role (single-active rule). */
 async function findActiveUserForRole(
   role: Exclude<ApproverRole, "adviser">,
 ): Promise<string | null> {
@@ -79,6 +146,7 @@ async function findActiveUserForRole(
     .maybeSingle();
   return (data?.id as string) ?? null;
 }
+
 function mapListItem(
   row: SubmissionRow,
   groupName: string,
@@ -118,7 +186,7 @@ export async function notify(
   message: string,
 ) {
   const supabase = await createClient();
-
+  // Resolve the submission's group so notifications can navigate to it.
   const { data: sub } = await supabase
     .from("group_taf_submissions")
     .select("group_id")
@@ -145,9 +213,21 @@ export async function notify(
     message,
   });
 }
+
+// ── Pending approvals for the current approver ─────────────────────
+
 export async function getPendingApprovals(): Promise<ApprovalListResult> {
   const user = await getCurrentUser();
   if (!user) return { success: false, error: "You must be logged in." };
+
+
+  const granted = await getMyGrantedPermissions();
+  if (!granted.includes("approval.participate")) {
+    return {
+      success: false,
+      error: "This account has not been granted participation in approvals.",
+    };
+  }
 
   const supabase = await createClient();
 
@@ -157,7 +237,7 @@ export async function getPendingApprovals(): Promise<ApprovalListResult> {
     .in("status", ["pending", "under_review"]);
 
   if (user.role === "adviser") {
-
+    // Adviser sees submissions currently routed to them (they own the group)
     const { data: groups } = await supabase
       .from("advisory_groups")
       .select("id")
@@ -173,6 +253,9 @@ export async function getPendingApprovals(): Promise<ApprovalListResult> {
     user.role === "vcrdes"
   ) {
     query = query.eq("current_approver_role", user.role);
+  } else if (user.role === "department") {
+
+    query = query.not("current_approver_role", "is", null);
   } else {
     return { success: false, error: "Your role cannot approve TAFs." };
   }
@@ -182,7 +265,44 @@ export async function getPendingApprovals(): Promise<ApprovalListResult> {
     console.error("[approval-workflow] Failed to load pending:", error);
     return { success: false, error: "Failed to load pending approvals." };
   }
-  const rows = data || [];
+
+  // Enrich with group name + student info
+  const rows: Record<string, unknown>[] = [
+    ...((data || []) as Record<string, unknown>[]),
+  ];
+
+  if (user.role === "associate_dean" || user.role === "dean") {
+    const { data: ownGroups } = await supabase
+      .from("advisory_groups")
+      .select("id")
+      .eq("adviser_id", user.id);
+    const ownIds = (ownGroups || []).map((g) => g.id as string);
+
+    if (ownIds.length > 0) {
+      const { data: ownEntry } = await supabase
+        .from("group_taf_submissions")
+        .select(
+          "id, group_id, taf_snapshot, combined_score, status, submitted_at, submitted_by, current_approver_role",
+        )
+        .in("status", ["pending", "under_review"])
+        .eq("current_approver_role", "adviser")
+        .in("group_id", ownIds)
+        .order("submitted_at", { ascending: false });
+
+      const seen = new Set(rows.map((r) => r.id as string));
+      for (const r of (ownEntry || []) as Record<string, unknown>[]) {
+        if (!seen.has(r.id as string)) rows.push(r);
+      }
+    }
+  }
+
+
+  const archived = await archivedGroupIds();
+  for (let i = rows.length - 1; i >= 0; i--) {
+    if (archived.has(rows[i].group_id as string)) rows.splice(i, 1);
+  }
+  if (rows.length === 0) return { success: true, data: [] };
+
   const groupIds = Array.from(new Set(rows.map((r) => r.group_id as string)));
   const studentIds = Array.from(new Set(rows.map((r) => r.submitted_by as string)));
 
@@ -224,9 +344,22 @@ export async function getPendingApprovals(): Promise<ApprovalListResult> {
     }),
   };
 }
+
+// ── Approved TAFs (fully approved only) ────────────────────────────
+
 export async function getApprovedTAFs(): Promise<ApprovalListResult> {
   const user = await getCurrentUser();
   if (!user) return { success: false, error: "You must be logged in." };
+
+  // Gated by `taf.approved.view` — the same key the nav and the dashboard tab
+  // read, so the list, the tab and the item can never disagree.
+  const granted = await getMyGrantedPermissions();
+  if (!granted.includes("taf.approved.view")) {
+    return {
+      success: false,
+      error: "This account has not been granted the Approved TAF list.",
+    };
+  }
 
   const supabase = await createClient();
 
@@ -283,6 +416,56 @@ export async function getApprovedTAFs(): Promise<ApprovalListResult> {
     }),
   };
 }
+
+// ── Approve a submission (routes to next approver) ─────────────────
+
+
+async function roleOf(userId: string | null): Promise<string | null> {
+  if (!userId) return null;
+  const supabase = await createClient();
+  const { data } = await supabase
+    .from("profiles")
+    .select("role")
+    .eq("id", userId)
+    .single();
+  return (data?.role as string) || null;
+}
+
+
+async function logDecision(args: {
+  submissionId: string;
+  entityLabel: string | null;
+  decision: "approved" | "returned";
+  step: ApproverRole;
+  actor: { id: string; name: string; role: string };
+  note: string;
+  nextRole?: ApproverRole | null;
+}): Promise<void> {
+  const standIn = args.actor.role !== args.step;
+  const stepLabel = STEP_LABEL[args.step];
+  const verb = args.decision === "approved" ? "approved" : "returned";
+  await logAudit({
+    action: args.decision === "approved" ? "taf_approved" : "taf_returned",
+    entityType: "taf_submission",
+    entityId: args.submissionId,
+    entityLabel: args.entityLabel,
+    // e.g. "Adviser step approved by Juan Dela Cruz (department) — stand-in"
+    description:
+      `${stepLabel} step ${verb} by ${args.actor.name} (${args.actor.role})` +
+      (standIn ? ` — stand-in for the ${stepLabel} role` : ""),
+    metadata: {
+      step: args.step,
+      stepNumber: ROLE_STEP[args.step],
+      stepRole: args.step,
+      actorId: args.actor.id,
+      actorRole: args.actor.role,
+      standIn,
+      nextRole: args.nextRole ?? null,
+      note: args.note || null,
+    },
+  });
+}
+
 export async function approveSubmission(
   submissionId: string,
   opts?: {
@@ -292,6 +475,11 @@ export async function approveSubmission(
   const user = await getCurrentUser();
   if (!user) return { success: false, error: "You must be logged in." };
 
+  // Archived group → no decisions, for ANY approver role.
+  if (await submissionGroupArchived(submissionId)) {
+    return { success: false, error: ARCHIVED_GROUP_ERROR };
+  }
+
   const supabase = await createClient();
 
   const { data: sub } = await supabase
@@ -300,39 +488,141 @@ export async function approveSubmission(
     .eq("id", submissionId)
     .single();
 
-  if (!sub) return { success: false, error: "Submission not found." };
-  if (sub.current_approver_role !== user.role) {
+  if (!sub) return { success: false, error: "TAF has been routed." };
+
+  // ── The group's owner ──────────────────────────────────
+
+  const { data: subGroup } = await supabase
+    .from("advisory_groups")
+    .select("adviser_id")
+    .eq("id", sub.group_id)
+    .single();
+  const ownerId = (subGroup?.adviser_id as string) || null;
+  const isOwner = !!ownerId && ownerId === user.id;
+
+  const step = (sub.current_approver_role as ApproverRole | null) || null;
+  if (!step) {
+    return { success: false, error: "This TAF is not awaiting an approval step." };
+  }
+
+  if (
+    step !== user.role &&
+    !(step === "adviser" && isOwner) &&
+    user.role !== "department"
+  ) {
     return {
       success: false,
-      error: `This TAF is not routed to you (currently with: ${sub.current_approver_role || "the student"}).`,
+      error: `This TAF is not routed to you (currently with: ${step || "the student"}).`,
     };
   }
 
-  const step = ROLE_STEP[user.role as ApproverRole];
+
+  if (user.role === "department") {
+    const granted = await getMyGrantedPermissions();
+    if (!granted.includes("approval.participate")) {
+      return {
+        success: false,
+        error:
+          "Your account has not been granted participation in approvals. Ask a department account to grant it.",
+      };
+    }
+  }
+
+  const subRow = sub as unknown as Record<string, unknown>;
+
+  // ── Never the same STEP twice ──────────────────────────
+
+  const stepNumber = ROLE_STEP[step];
+  const stepStatus = subRow[`approver_${stepNumber}_status`];
+  const alreadySignedThisStep = subRow[`approver_${stepNumber}`] === user.id;
+  const stepAlreadyDecided =
+    stepStatus === "approved" || stepStatus === "rejected";
+
+  if (alreadySignedThisStep) {
+    return {
+      success: false,
+      error: `You already decided the ${STEP_LABEL[step]} step of this TAF. One account cannot sign the same step twice.`,
+    };
+  }
+  if (stepAlreadyDecided) {
+    return {
+      success: false,
+      error: `The ${STEP_LABEL[step]} step of this TAF has already been decided and cannot be signed twice.`,
+    };
+  }
+
   const now = new Date().toISOString();
   const note = (opts?.note || "").trim();
+
+
+  const actor = {
+    id: user.id,
+    name:
+      formatName({
+        firstName: user.firstName,
+        middleInitial: user.middleInitial,
+        lastName: user.lastName,
+        suffix: user.suffix,
+      }) || "Unknown",
+    role: user.role as string,
+  };
+  const tafSnapshot = sub.taf_snapshot as Record<string, unknown> | null;
+  const entityLabel = (tafSnapshot?.proposedTitle as string) || null;
+
+
+  const ownerProfile = await supabase
+    .from("profiles")
+    .select("first_name, middle_initial, last_name, suffix, sr_code")
+    .eq("id", sub.submitted_by as string)
+    .maybeSingle();
+  const ownerName =
+    formatName({
+      firstName: ownerProfile.data?.first_name ?? "",
+      middleInitial: ownerProfile.data?.middle_initial ?? null,
+      lastName: ownerProfile.data?.last_name ?? "",
+      suffix: ownerProfile.data?.suffix ?? null,
+    }) ||
+    (ownerProfile.data?.sr_code as string) ||
+    "A student";
+
   const FIXED_CHAIN: ApproverRole[] = [
     "adviser",
     "associate_dean",
     "dean",
     "vcrdes",
   ];
-  const myIndex = FIXED_CHAIN.indexOf(user.role as ApproverRole);
-  let nextRole: ApproverRole | null =
-    myIndex >= 0 && myIndex < FIXED_CHAIN.length - 1
-      ? FIXED_CHAIN[myIndex + 1]
-      : null;
-  const update: Record<string, unknown> = {
-    [`approver_${step}_status`]: "approved",
-    [`approver_${step}_decision_note`]: note || null,
-    [`approver_${step}_decided_at`]: now,
-    status: "under_review",
-    [`approver_${step}`]: user.id,
-  };
-  if (user.role === "adviser") {
-    update.approval_route = ["associate_dean", "dean", "vcrdes"];
+
+  const ownerRole = await roleOf(ownerId);
+  const skipped: ApproverRole[] =
+    ownerRole && ownerRole !== "adviser" && (FIXED_CHAIN as string[]).includes(ownerRole)
+      ? [ownerRole as ApproverRole]
+      : [];
+
+  const myIndex = FIXED_CHAIN.indexOf(step);
+  let nextRole: ApproverRole | null = null;
+  for (let i = myIndex + 1; i < FIXED_CHAIN.length; i++) {
+    if (!skipped.includes(FIXED_CHAIN[i])) {
+      nextRole = FIXED_CHAIN[i];
+      break;
+    }
   }
-  if (user.role === "vcrdes" || nextRole === null) {
+
+  // ── Record the decision ────────────────────────────────
+
+  const update: Record<string, unknown> = {
+    [`approver_${stepNumber}_status`]: "approved",
+    [`approver_${stepNumber}_decision_note`]: note || null,
+    [`approver_${stepNumber}_decided_at`]: now,
+    status: "under_review",
+    [`approver_${stepNumber}`]: user.id,
+  };
+
+  if (step === "adviser") {
+    update.approval_route = FIXED_CHAIN.slice(1).filter((r) => !skipped.includes(r));
+  }
+
+  // ── Final approval at VCRDES ───────────────────────────
+  if (step === "vcrdes" || nextRole === null) {
     update.status = "approved";
     update.current_approver_role = null;
     update.fully_approved_at = now;
@@ -347,6 +637,17 @@ export async function approveSubmission(
         error: `Failed to record approval: ${updateErr.message || updateErr.details || "RLS or DB error"}.`,
       };
     }
+
+
+    await logDecision({
+      submissionId,
+      entityLabel,
+      decision: "approved",
+      step,
+      actor,
+      note,
+      nextRole: null,
+    });
 
     await notify(
       sub.submitted_by as string,
@@ -386,6 +687,19 @@ export async function approveSubmission(
       error: `Failed to record approval: ${updateErr.message || updateErr.details || "RLS or DB error"}.`,
     };
   }
+
+
+  await logDecision({
+    submissionId,
+    entityLabel,
+    decision: "approved",
+    step,
+    actor,
+    note,
+    nextRole,
+  });
+
+  // ── Notify the next approver ───────────────────────────
   if (nextRole) {
     const nextUserId =
       nextRole === "adviser"
@@ -404,11 +718,13 @@ export async function approveSubmission(
         nextRole === "adviser"
           ? "the adviser"
           : nextRole.replace("_", " ").toUpperCase();
+
+      const title = (entityLabel || "Untitled TAF").trim();
       await notify(
         nextUserId,
         submissionId,
         "routed_to_approver",
-        `A TAF has been routed to you (${label}) for approval.`,
+        `${ownerName} · ${title} — routed to you (${label}) for approval.`,
       );
     }
   }
@@ -420,6 +736,9 @@ export async function approveSubmission(
     fullyApproved: false,
   };
 }
+
+// ── Return a submission to the student for revision ────────────────
+
 export async function returnSubmission(
   submissionId: string,
   reason: string,
@@ -432,32 +751,67 @@ export async function returnSubmission(
     return { success: false, error: "Please provide a reason for returning the TAF." };
   }
 
+  if (await submissionGroupArchived(submissionId)) {
+    return { success: false, error: ARCHIVED_GROUP_ERROR };
+  }
+
   const supabase = await createClient();
 
   const { data: sub } = await supabase
     .from("group_taf_submissions")
-    .select("group_id, submitted_by, current_approver_role")
+    .select("group_id, submitted_by, current_approver_role, taf_snapshot")
     .eq("id", submissionId)
     .single();
 
-  if (!sub) return { success: false, error: "Submission not found." };
+  if (!sub) return { success: false, error: "STAF has been routed." };
 
-  if (sub.current_approver_role !== user.role) {
+
+  const { data: returnGroup } = await supabase
+    .from("advisory_groups")
+    .select("adviser_id")
+    .eq("id", sub.group_id as string)
+    .single();
+  const returnOwnerId = (returnGroup?.adviser_id as string) || null;
+  const isReturnOwner = !!returnOwnerId && returnOwnerId === user.id;
+
+
+  const step = sub.current_approver_role as ApproverRole | null;
+  if (!step) {
+    return { success: false, error: "This TAF is not awaiting an approval step." };
+  }
+
+  if (
+    step !== user.role &&
+    !(step === "adviser" && isReturnOwner) &&
+    user.role !== "department"
+  ) {
     return {
       success: false,
-      error: `This TAF is not routed to you (currently with: ${sub.current_approver_role || "the student"}).`,
+      error: `This TAF is not routed to you (currently with: ${step || "the student"}).`,
     };
   }
 
-  const step = ROLE_STEP[user.role as ApproverRole];
+  if (user.role === "department") {
+    const granted = await getMyGrantedPermissions();
+    if (!granted.includes("approval.participate")) {
+      return {
+        success: false,
+        error:
+          "Your account has not been granted participation in approvals. Ask a department account to grant it.",
+      };
+    }
+  }
+
   const now = new Date().toISOString();
 
+  const returnStepNumber = ROLE_STEP[step];
   const returnedUpdate = {
     status: "revisions_needed",
     current_approver_role: null,
-    [`approver_${step}_status`]: "rejected",
-    [`approver_${step}_decision_note`]: clean,
-    [`approver_${step}_decided_at`]: now,
+    [`approver_${returnStepNumber}_status`]: "rejected",
+    [`approver_${returnStepNumber}_decision_note`]: clean,
+    [`approver_${returnStepNumber}_decided_at`]: now,
+    [`approver_${returnStepNumber}`]: user.id,
     returned_reason: clean,
     returned_by: user.id,
     returned_at: now,
@@ -473,6 +827,27 @@ export async function returnSubmission(
     };
   }
 
+  const returnSnapshot = sub.taf_snapshot as Record<string, unknown> | null;
+  await logDecision({
+    submissionId,
+    entityLabel: (returnSnapshot?.proposedTitle as string) || null,
+    decision: "returned",
+    step,
+    actor: {
+      id: user.id,
+      name:
+        formatName({
+          firstName: user.firstName,
+          middleInitial: user.middleInitial,
+          lastName: user.lastName,
+          suffix: user.suffix,
+        }) || "Unknown",
+      role: user.role as string,
+    },
+    note: clean,
+    nextRole: null,
+  });
+
   await notify(
     sub.submitted_by as string,
     submissionId,
@@ -482,6 +857,8 @@ export async function returnSubmission(
 
   return { success: true, message: "TAF returned to the student for revision." };
 }
+
+
 export type UpdateSubmittedTafResult =
   | { success: true; message: string }
   | { success: false; error: string };
@@ -511,11 +888,11 @@ export async function updateSubmittedTafContent(
     .eq("id", submissionId)
     .single();
 
-  if (!sub) return { success: false, error: "Submission not found." };
+  if (!sub) return { success: false, error: "TAF has been routed." };
   if (sub.submitted_by !== user.id) {
     return { success: false, error: "You can only edit your own submission." };
   }
-
+  // A fully-approved submission is frozen (no further edits).
   if (sub.status === "approved") {
     return { success: false, error: "This TAF is already fully approved and is locked." };
   }
@@ -528,6 +905,8 @@ export async function updateSubmittedTafContent(
     methodology: data.methodology || "",
     referenceList: data.referenceList || "",
   };
+
+  // 1. Update the submission's snapshot so approvers see the revision.
   const { error: snapErr } = await supabase
     .from("group_taf_submissions")
     .update({ taf_snapshot: snapshot })
@@ -537,6 +916,9 @@ export async function updateSubmittedTafContent(
     console.error("[approval-workflow] snapshot update failed:", snapErr);
     return { success: false, error: "Failed to save your edits." };
   }
+
+  // 2. Mirror back to the TAF draft (rich-text fields as HTML paragraphs,
+  // title stays plain text).
   const { error: draftErr } = await supabase
     .from("topic_abstract_forms")
     .update({
@@ -558,11 +940,18 @@ export async function updateSubmittedTafContent(
     message: "Your edits were saved.",
   };
 }
+
+// ── Student resubmits after revision ───────────────────────────────
+
 export async function resubmitTAF(submissionId: string): Promise<ResubmitResult> {
   const user = await getCurrentUser();
   if (!user) return { success: false, error: "You must be logged in." };
   if (user.role !== "student") {
     return { success: false, error: "Only the submitting student can resubmit." };
+  }
+
+  if (await submissionGroupArchived(submissionId)) {
+    return { success: false, error: ARCHIVED_GROUP_ERROR };
   }
 
   const supabase = await createClient();
@@ -573,13 +962,14 @@ export async function resubmitTAF(submissionId: string): Promise<ResubmitResult>
     .eq("id", submissionId)
     .single();
 
-  if (!sub) return { success: false, error: "Submission not found." };
+  if (!sub) return { success: false, error: "TAF has been routed." };
   if (sub.submitted_by !== user.id) {
     return { success: false, error: "You can only resubmit your own TAF." };
   }
   if (sub.status !== "revisions_needed") {
     return { success: false, error: "This TAF is not in a returned state." };
   }
+
   const submittedVersion = (sub.analysis_version as number) || 1;
   const [tafRes, analysisRes] = await Promise.all([
     supabase
@@ -600,6 +990,7 @@ export async function resubmitTAF(submissionId: string): Promise<ResubmitResult>
   }
 
   const now = new Date().toISOString();
+
   const tafRow = (tafRes.data as Record<string, unknown> | null) || ({} as Record<string, unknown>);
   const tafSnapshot: Record<string, unknown> = {
     proposedTitle: (tafRow.proposed_title as string) || "",
@@ -615,16 +1006,19 @@ export async function resubmitTAF(submissionId: string): Promise<ResubmitResult>
   const resubmitUpdate = {
     status: "pending",
     current_approver_role: "adviser",
-
+    approver_1: null,
     approver_1_status: "pending",
     approver_1_decision_note: null,
     approver_1_decided_at: null,
+    approver_2: null,
     approver_2_status: "pending",
     approver_2_decision_note: null,
     approver_2_decided_at: null,
+    approver_3: null,
     approver_3_status: "pending",
     approver_3_decision_note: null,
     approver_3_decided_at: null,
+    approver_4: null,
     approver_4_status: "pending",
     approver_4_decision_note: null,
     approver_4_decided_at: null,
@@ -650,6 +1044,8 @@ export async function resubmitTAF(submissionId: string): Promise<ResubmitResult>
       error: `Failed to resubmit the TAF: ${updateErr.message || updateErr.details || "RLS or DB error"}.`,
     };
   }
+
+  // Notify the group adviser
   const { data: group } = await supabase
     .from("advisory_groups")
     .select("adviser_id")
@@ -664,23 +1060,41 @@ export async function resubmitTAF(submissionId: string): Promise<ResubmitResult>
     );
   }
 
+  await logAudit({
+    action: "taf_resubmitted",
+    category: "submission",
+    entityType: "submission",
+    entityId: submissionId,
+    entityLabel: sub.id,
+    description: "Resubmitted a returned TAF for review (the chain restarts at the adviser).",
+    metadata: { analysisVersion: submittedVersion },
+    actor: { id: user.id, email: user.email, role: user.role },
+  });
+
   return { success: true, message: "TAF resubmitted — it is now back with the adviser." };
 }
+
+// ── Notifications for the current user ─────────────────────────────
+
 export type ApprovalNotification = {
   id: string;
   submissionId: string | null;
-
+  /** Non-submission notifications (e.g. group joins) carry this instead. */
   groupId: string | null;
   groupName: string | null;
   type: string;
   message: string;
   readAt: string | null;
   createdAt: string;
+  groupArchived: boolean;
 };
 
 export type NotificationsResult =
   | { success: true; data: ApprovalNotification[] }
   | { success: false; error: string };
+
+// ── Student unsubmits (withdraws) their TAF from the approval flow ──
+
 export type UnsubmitTafResult = { success: true } | { success: false; error: string };
 
 export async function unsubmitTAF(
@@ -690,6 +1104,10 @@ export async function unsubmitTAF(
   if (!user) return { success: false, error: "You must be logged in." };
   if (user.role !== "student") {
     return { success: false, error: "Only students can unsubmit a TAF." };
+  }
+
+  if (await submissionGroupArchived(submissionId)) {
+    return { success: false, error: ARCHIVED_GROUP_ERROR };
   }
 
   const supabase = await createClient();
@@ -709,6 +1127,15 @@ export async function unsubmitTAF(
         "You can only unsubmit a TAF that you submitted, and it must not be fully approved yet.",
     };
   }
+
+  await logAudit({
+    action: "taf_unsubmitted",
+    category: "submission",
+    entityType: "submission",
+    entityId: submissionId,
+    description: "Withdrew a TAF submission; it is back in their drafts.",
+    actor: { id: user.id, email: user.email, role: user.role },
+  });
 
   return { success: true };
 }
@@ -730,6 +1157,8 @@ export async function getMyNotifications(): Promise<NotificationsResult> {
     return { success: false, error: "Failed to load notifications." };
   }
 
+  const archived = await archivedGroupIds();
+
   return {
     success: true,
     data: (data || []).map((r) => ({
@@ -741,12 +1170,13 @@ export async function getMyNotifications(): Promise<NotificationsResult> {
       message: r.message as string,
       readAt: r.read_at as string | null,
       createdAt: r.created_at as string,
+      groupArchived: archived.has((r.group_id as string) || ""),
     })),
   };
 }
 
 export async function markNotificationsRead(input: {
-
+  /** Mark ONE notification read by its id (per-item control). */
   id?: string;
   submissionId?: string;
   groupId?: string;
@@ -776,6 +1206,7 @@ export async function markNotificationsRead(input: {
   }
   return { success: true };
 }
+
 export async function markAllNotificationsRead(): Promise<{
   success: boolean;
   marked?: number;

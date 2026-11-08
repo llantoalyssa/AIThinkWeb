@@ -293,7 +293,7 @@ export default function TAFAnalysisResults({
                 </button>
               </DialogTrigger>
 
-              <DialogContent className="sm:max-w-2xl max-h-[85vh] overflow-y-auto">
+              <DialogContent fullOnMobile className="sm:max-w-6xl">
                 <DialogHeader>
                   <DialogTitle className="flex items-center gap-2 text-base">
                     <BarChart3 className="h-4 w-4 text-[#8B1A1A]" />
@@ -302,15 +302,15 @@ export default function TAFAnalysisResults({
                 </DialogHeader>
 
                 <div className="space-y-4">
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                    <div className="text-center p-3 rounded-lg bg-gray-50">
-                      <div className="text-2xl font-bold text-[#333]">
+                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 sm:gap-3">
+                    <div className="rounded-lg bg-gray-50 p-2.5 text-center sm:p-3">
+                      <div className="text-xl font-bold text-[#333] sm:text-2xl">
                         {combinedScore.toFixed(1)}%
                       </div>
                       <div className="text-xs text-gray-500 mt-0.5">Combined</div>
                     </div>
                     <div className="text-center p-3 rounded-lg bg-blue-50">
-                      <div className="text-xl font-bold text-blue-700">
+                      <div className="text-lg font-bold text-blue-700 sm:text-xl">
                         {internalScore.toFixed(2)}%
                       </div>
                       <div className="text-xs text-blue-600 mt-0.5">
@@ -318,7 +318,7 @@ export default function TAFAnalysisResults({
                       </div>
                     </div>
                     <div className="text-center p-3 rounded-lg bg-purple-50">
-                      <div className="text-xl font-bold text-purple-700">
+                      <div className="text-lg font-bold text-purple-700 sm:text-xl">
                         {externalScore.toFixed(2)}%
                       </div>
                       <div className="text-xs text-purple-600 mt-0.5">
@@ -567,7 +567,7 @@ export default function TAFAnalysisResults({
               researchGapAnalysis ||
               "No research gap analysis detected. You may concern this to your capstone adviser or instructor.";
             return (
-              <p className="text-sm text-[#444] leading-relaxed whitespace-pre-line">
+              <p className="text-justify text-pretty text-sm leading-relaxed whitespace-pre-line text-[#444]">
                 {gapText}
               </p>
             );

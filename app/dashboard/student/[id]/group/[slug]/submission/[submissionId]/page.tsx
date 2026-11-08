@@ -14,6 +14,7 @@ import { redirect } from "next/navigation";
 import { getStudentShell } from "@/server/actions/shell-data";
 import { getSubmissionById } from "@/server/actions/group-submissions";
 import { getUserRecentTAFs } from "@/server/actions/recents";
+import { getStudentGroupBySlug } from "@/server/actions/advisory-groups";
 import StudentSubmissionViewPage from "./student-submission-client";
 
 export default async function StudentSubmissionRoute({
@@ -24,10 +25,13 @@ export default async function StudentSubmissionRoute({
 }) {
   const { id, slug, submissionId } = await params;
 
-  const [shell, submission, recents] = await Promise.all([
+  const [shell, submission, recents, group] = await Promise.all([
     getStudentShell(),
     getSubmissionById(submissionId),
     getUserRecentTAFs(),
+    // Archived groups stay readable for their members (migration 065), but the
+    // export action must be withheld — see hideExport below.
+    getStudentGroupBySlug(slug),
   ]);
 
   // Access checks live here now (these used to run in the client).
@@ -51,6 +55,9 @@ export default async function StudentSubmissionRoute({
       initialError={submission.success ? null : submission.error}
       // On failure pass nothing so the child keeps its own fetch fallback.
       initialRecents={recents.success ? recents.data : undefined}
+      // Archived → read-only: the TAF can still be opened and read, but not
+      // exported (no PDF/print from a closed advisory group).
+      groupArchived={group.success ? !group.data.isActive : false}
     />
   );
 }

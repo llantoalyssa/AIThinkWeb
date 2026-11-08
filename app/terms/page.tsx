@@ -112,7 +112,7 @@ export default function TermsPage() {
           <Section title="Similarity Scoring and Decision Support">
             <Bullets
               items={[
-                "Similarity Calculation: The system calculates semantic overlap using Sentence-BERT vector embeddings. Matches at or below 20% similarity are treated as noise and count as zero; the remaining matches are then weighted by rank across the top 5 results — Top 1 at 40%, Top 2 at 25%, Top 3 at 15%, Top 4 at 12% and Top 5 at 8% (the weights are renormalized proportionally when fewer than five matches are found). The final score is the internal aggregate (50%) plus the external aggregate (50%).",
+                "Similarity Calculation: The system calculates semantic overlap using Sentence-BERT (SBERT) vector embeddings through a section-calibrated similarity pipeline. To measure conceptual overlap rather than word matching, the proposed Topic Abstract Form (TAF) is compared against past papers across four weighted sections: Objectives (35%), Subject/Background (30%), Methodology (20%), and Full Text (15%). Each section score undergoes noise calibration — 28 for internal CICS journals to filter out common campus phrasing, and 22 for external literature. The top 5 matching studies per domain are then aggregated using rank weights: Top 1 at 40%, Top 2 at 25%, Top 3 at 15%, Top 4 at 12%, and Top 5 at 8%. The overall similarity score is calculated by combining the internal aggregate (40%) and the external aggregate (60%).",
                 "AI-Assisted: Google Gemini evaluates top-matched studies to suggest research gaps, UN Sustainable Development Goal (SDG) classifications, Field of IT, and topic improvements.",
                 "Advisory Nature: AIThink is a decision support system, not an automated grading system. Similarity score and AI feedback are meant to guide users. Final approval of topics remains entirely with executive evaluators.",
               ]}
@@ -176,13 +176,22 @@ export default function TermsPage() {
               Feel free to contact the College of Informatics and Computing
               Sciences.
             </p>
+            <p>
+              Email:{" "}
+              <a
+                href="mailto:cics.malvar@g.batstate-u.edu.ph"
+                className="font-medium text-[#8B1A1A] hover:underline"
+              >
+                cics.malvar@g.batstate-u.edu.ph
+              </a>
+            </p>
           </Section>
 
           {}
           <header className="space-y-1 border-t pt-8">
             <h1 className="text-2xl font-bold text-[#333]">Privacy Policy</h1>
             <p className="text-sm font-medium text-gray-500">
-              Updated on 19 October 2026
+              Updated on 9 October 2026
             </p>
           </header>
 
@@ -198,7 +207,7 @@ export default function TermsPage() {
           <Section title="Information We Collect">
             <Bullets
               items={[
-                "Account and Identification Data: Your full name, university GSuite email address, SR-Code, and assigned user role (department, student, adviser, dean, associate_dean, vcrdes).",
+                "Account and Identification Data: Your full name, university GSuite email address, SR-Code, and assigned user role (student, adviser, dean, associate_dean, vcrdes).",
                 "Student Proposal Content: Content submitted through the Topic Abstract Form (titles, backgrounds, objectives, review of related literatures, methodologies, and references).",
                 "CICS Journals: Past capstone journal PDF files uploaded strictly by the department account to maintain the internal similarity reference.",
                 "Review and collaboration: Group join codes created by capstone advisers, student group records, and comments left on submitted TAFs.",
@@ -209,7 +218,8 @@ export default function TermsPage() {
           <Section title="Account and Security Records">
             <Bullets
               items={[
-                "Records of key actions taken, such as account creation, user log-in and log-out, submitting and deleting a TAF, and leaving an advisory group.",
+                "Last sign-in timestamp: the date and time you last signed in to your account.",
+                "Activity logs: records of key actions taken, such as logging in, joining an advisory group, and submitting a TAF.",
               ]}
             />
           </Section>
@@ -259,7 +269,7 @@ export default function TermsPage() {
                 "You: Can see your own profile, saved drafts, submitted TAFs, similarity reports, 5-attempt usage counter, and evaluator comments.",
                 "Capstone Advisers: Can only view students who joined their group through join code. Advisers can view submitted TAFs, similarity scores, AI feedback, and leave comments. Advisers cannot view your unsubmitted drafts.",
                 "Executive Evaluators: Can view submitted TAFs across the department, evaluate/approve topics, and access analytics.",
-                "Other Students: Can browse the Public Topic Overview to view low-similarity, submitted, and approved topic overviews (Title, Summary, SDG Alignment, and IT Field). Students cannot view another student's all contents of TAF, personal account details, or evaluator comments.",
+                "Other Proponents: Can browse the Public Topic Overview to view low-similarity, submitted, and approved topic overviews (Title, Summary, SDG Alignment, and IT Field). Other proponents cannot view another proponent's full TAF contents, personal account details, or evaluator comments.",
               ]}
             />
             <p>
@@ -271,8 +281,8 @@ export default function TermsPage() {
           <Section title="Data Accuracy">
             <p>
               Students can edit draft content prior to submission. Account
-              details (SR-Code, Name, Email) are synchronized through Gsuite
-              authentication; contact CICS administration if profile details
+              details (SR-Code, Name, Email) cannot be edited by the account
+              holder; contact the CICS administration if your profile details
               require correction.
             </p>
           </Section>
@@ -281,6 +291,15 @@ export default function TermsPage() {
             <p>
               Feel free to contact the College of Informatics and Computing
               Sciences.
+            </p>
+            <p>
+              Email:{" "}
+              <a
+                href="mailto:cics.malvar@g.batstate-u.edu.ph"
+                className="font-medium text-[#8B1A1A] hover:underline"
+              >
+                cics.malvar@g.batstate-u.edu.ph
+              </a>
             </p>
           </Section>
         </article>

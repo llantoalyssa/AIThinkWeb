@@ -7,12 +7,12 @@ import {
   updateJournal,
   deleteJournal,
   logJournalExtractCost,
-  extractPdfText,
+  extractPdfPages,
   reembedJournals,
   type Journal,
 } from "@/server/actions/journals";
 import { extractJournalMetadata } from "@/server/analysis/extract-metadata";
-import { ocrPdfFile, shouldOcr } from "@/lib/pdf-ocr";
+import { ocrPdfPages } from "@/lib/pdf-ocr";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -39,6 +39,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import ConfirmDeleteModal from "@/components/ui/confirm-delete-modal";
+import TablePagination from "@/components/table-pagination";
 type FileEntry = {
   id: string;
   file: File;
@@ -58,13 +59,17 @@ type FileEntry = {
 };
 
 const MAX_FILES = 5;
+const JOURNALS_PER_PAGE = 10;
 
 export default function DepartmentJournals({
   initialJournals,
+  canManage = true,
 }: {
   initialJournals?: Journal[];
+  canManage?: boolean;
 } = {}) {
   const [journals, setJournals] = useState<Journal[]>(initialJournals ?? []);
+  const [journalsPage, setJournalsPage] = useState(1);
   const [loading, setLoading] = useState(!initialJournals);
   const [error, setError] = useState<string | null>(null);
   const [uploadOpen, setUploadOpen] = useState(false);
@@ -222,18 +227,40 @@ export default function DepartmentJournals({
         const fileUrl = urlData?.publicUrl || "";
         updateField(entry.id, "fileUrl", fileUrl);
         updateStatus(entry.id, "extracting");
-        let extractedText = await extractPdfText(fileUrl);
-        if (shouldOcr(extractedText)) {
+        const pdfResult = await extractPdfPages(fileUrl);
+        const pages: string[] = pdfResult.success ? [...pdfResult.pages] : [];
+        if (pdfResult.success && pdfResult.thinPages.length > 0) {
           updateStatus(entry.id, "ocr");
           try {
-            const ocrText = await ocrPdfFile(entry.file);
-            if (ocrText && ocrText.trim().length > extractedText.trim().length) {
-              extractedText = ocrText;
+            const recognised = await ocrPdfPages(entry.file, {
+              pages: pdfResult.thinPages,
+            });
+            for (const { page, text } of recognised) {
+              if (!text.trim()) continue;
+              const current = (pages[page - 1] ?? "").trim();
+              pages[page - 1] = current ? `${current}\n\n${text}` : text;
+            }
+          } catch (ocrErr) {
+            console.warn("[journal-upload] OCR fallback failed:", ocrErr);
+          }
+        } else if (!pdfResult.success) {
+          updateStatus(entry.id, "ocr");
+          try {
+            const recognised = await ocrPdfPages(entry.file);
+            for (const { page, text } of recognised) {
+              pages[page - 1] = [pages[page - 1], text].filter(Boolean).join("\n\n");
             }
           } catch (ocrErr) {
             console.warn("[journal-upload] OCR fallback failed:", ocrErr);
           }
         }
+
+        const extractedText = pages
+          .map((p) => (p ?? "").trim())
+          .filter(Boolean)
+          .join("\n\n")
+          .trim();
+
         updateField(entry.id, "extractedText", extractedText);
         if (extractedText.trim().length > 50) {
           updateStatus(entry.id, "ai_extracting");
@@ -248,6 +275,8 @@ export default function DepartmentJournals({
                 completionTokens: aiResult.data.usage.completionTokens,
                 totalTokens: aiResult.data.usage.totalTokens,
                 journalTitle: aiResult.data.title || entry.title,
+                provider: aiResult.data.provider,
+                model: aiResult.data.model,
               });
             }
           } else {
@@ -369,6 +398,15 @@ export default function DepartmentJournals({
       !filterYear.trim() || (j.year || "").trim() === filterYear.trim();
     return matchesText && matchesYear;
   });
+  const journalsTotalPages = Math.max(
+    1,
+    Math.ceil(filteredJournals.length / JOURNALS_PER_PAGE),
+  );
+  const journalsSafePage = Math.min(journalsPage, journalsTotalPages);
+  const pagedJournals = filteredJournals.slice(
+    (journalsSafePage - 1) * JOURNALS_PER_PAGE,
+    journalsSafePage * JOURNALS_PER_PAGE,
+  );
   return (
     <>
       {}
@@ -378,35 +416,38 @@ export default function DepartmentJournals({
             Journals
           </h2>
           <p className="text-sm text-gray-500 mt-1">
-            Upload and manage research journals for similarity comparison with
-            student TAFs.
+            {canManage
+              ? "Upload and manage research journals for similarity comparison with student TAFs."
+              : "Research journals used for similarity comparison with student TAFs."}
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          <Button
-            onClick={handleReembed}
-            disabled={reembedding}
-            variant="outline"
-            title="Recompute embeddings from each journal's academic core (title + abstract). Run once after the embedding-core migration."
-          >
-            {reembedding ? (
-              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-            ) : (
-              <RefreshCw className="h-4 w-4 mr-2" />
-            )}
-            {reembedding ? "Re-embedding…" : "Re-embed Journals"}
-          </Button>
-          <Button
-            onClick={() => {
-              resetForm();
-              setUploadOpen(true);
-            }}
-            className="bg-green-600 hover:bg-green-700 text-white"
-          >
-            <Upload className="h-4 w-4 mr-2" />
-            Upload Journals
-          </Button>
-        </div>
+        {canManage && (
+          <div className="flex items-center gap-2">
+            <Button
+              onClick={handleReembed}
+              disabled={reembedding}
+              variant="outline"
+              title="Recompute embeddings from each journal's academic core (title + abstract). Run once after the embedding-core migration."
+            >
+              {reembedding ? (
+                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+              ) : (
+                <RefreshCw className="h-4 w-4 mr-2" />
+              )}
+              {reembedding ? "Re-embedding…" : "Re-embed Journals"}
+            </Button>
+            <Button
+              onClick={() => {
+                resetForm();
+                setUploadOpen(true);
+              }}
+              className="bg-green-600 hover:bg-green-700 text-white"
+            >
+              <Upload className="h-4 w-4 mr-2" />
+              Upload Journals
+            </Button>
+          </div>
+        )}
       </div>
 
       {}
@@ -556,11 +597,13 @@ export default function DepartmentJournals({
                     .join(" • ") || "No metadata"}
                 </DialogDescription>
               </DialogHeader>
-              <div className="flex-1 min-h-[85vh] bg-gray-100">
+              {
+}
+              <div className="min-h-[60vh] flex-1 bg-gray-100 sm:min-h-[85vh]">
                 <iframe
                   src={viewingJournal.fileUrl}
                   title={viewingJournal.title}
-                  className="w-full h-full min-h-[85vh]"
+                  className="h-full min-h-[60vh] w-full sm:min-h-[85vh]"
                 />
               </div>
             </>
@@ -605,16 +648,19 @@ export default function DepartmentJournals({
             No journals uploaded yet
           </h3>
           <p className="text-sm text-gray-500 mb-4 max-w-md">
-            Upload research journals (PDF) so the system can compare student
-            TAFs against them for similarity analysis.
+            {canManage
+              ? "Upload research journals (PDF) so the system can compare student TAFs against them for similarity analysis."
+              : "No journals have been added yet. A department account uploads them for similarity analysis."}
           </p>
-          <Button
-            onClick={() => setUploadOpen(true)}
-            className="bg-green-600 hover:bg-green-700 text-white"
-          >
-            <Upload className="h-4 w-4 mr-2" />
-            Upload Your First Journal
-          </Button>
+          {canManage && (
+            <Button
+              onClick={() => setUploadOpen(true)}
+              className="bg-green-600 hover:bg-green-700 text-white"
+            >
+              <Upload className="h-4 w-4 mr-2" />
+              Upload Your First Journal
+            </Button>
+          )}
         </div>
       ) : filteredJournals.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-16 text-center rounded-lg border bg-white">
@@ -627,7 +673,85 @@ export default function DepartmentJournals({
           </p>
         </div>
       ) : (
-        <div className="overflow-x-auto rounded-lg border bg-white">
+        <div className="rounded-lg border bg-white">
+          {
+}
+          <div className="divide-y sm:hidden">
+            {pagedJournals.map((journal) => (
+              <div key={`m-${journal.id}`} className="px-3 py-3">
+                <button
+                  type="button"
+                  onClick={() => setViewingJournal(journal)}
+                  className="flex w-full items-start gap-2 text-left active:opacity-70"
+                >
+                  <FileText className="mt-0.5 h-4 w-4 shrink-0 text-[#8B1A1A]" />
+                  <span className="line-clamp-2 flex-1 text-sm font-medium leading-snug text-[#333]">
+                    {journal.title}
+                  </span>
+                </button>
+                <p className="mt-1 line-clamp-2 pl-6 text-xs text-gray-500">
+                  {journal.authors || "—"}
+                </p>
+                <div className="mt-1.5 flex flex-wrap items-center gap-2 pl-6">
+                  <span className="text-[11px] text-gray-500">
+                    {journal.year || "—"}
+                  </span>
+                  {journal.hasText ? (
+                    <span className="inline-flex items-center rounded-full bg-green-50 px-2 py-0.5 text-[11px] font-medium text-green-700">
+                      Processed
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700">
+                      Pending
+                    </span>
+                  )}
+                  <span className="text-[11px] text-gray-400">
+                    {new Date(journal.createdAt).toLocaleDateString()}
+                  </span>
+                </div>
+                <div className="mt-1 flex items-center gap-1 pl-5">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setViewingJournal(journal)}
+                    className="h-8 px-2 text-gray-500 hover:text-[#8B1A1A]"
+                    aria-label="View PDF"
+                  >
+                    <Eye className="h-4 w-4" />
+                  </Button>
+                  {canManage && (
+                    <>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => openEdit(journal)}
+                        className="h-8 px-2 text-gray-500 hover:text-[#8B1A1A]"
+                        aria-label="Edit metadata"
+                      >
+                        <Pencil className="h-4 w-4" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => openDeleteConfirm(journal.id)}
+                        disabled={deletingId === journal.id}
+                        className="h-8 px-2 text-gray-500 hover:text-red-600"
+                        aria-label="Delete journal"
+                      >
+                        {deletingId === journal.id ? (
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                        ) : (
+                          <Trash2 className="h-4 w-4" />
+                        )}
+                      </Button>
+                    </>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <div className="hidden overflow-x-auto sm:block">
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b bg-gray-50 text-left">
@@ -642,7 +766,7 @@ export default function DepartmentJournals({
               </tr>
             </thead>
             <tbody className="divide-y">
-              {filteredJournals.map((journal) => (
+              {pagedJournals.map((journal) => (
                 <tr
                   key={journal.id}
                   className="hover:bg-gray-50/50 transition-colors"
@@ -693,33 +817,45 @@ export default function DepartmentJournals({
                     >
                       <Eye className="h-4 w-4" />
                     </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => openEdit(journal)}
-                      className="text-gray-500 hover:text-[#8B1A1A]"
-                      title="Edit metadata"
-                    >
-                      <Pencil className="h-4 w-4" />
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => openDeleteConfirm(journal.id)}
-                      disabled={deletingId === journal.id}
-                      className="text-gray-500 hover:text-red-600"
-                    >
-                      {deletingId === journal.id ? (
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                      ) : (
-                        <Trash2 className="h-4 w-4" />
-                      )}
-                    </Button>
+                    {canManage && (
+                      <>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => openEdit(journal)}
+                          className="text-gray-500 hover:text-[#8B1A1A]"
+                          title="Edit metadata"
+                        >
+                          <Pencil className="h-4 w-4" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => openDeleteConfirm(journal.id)}
+                          disabled={deletingId === journal.id}
+                          className="text-gray-500 hover:text-red-600"
+                        >
+                          {deletingId === journal.id ? (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                          ) : (
+                            <Trash2 className="h-4 w-4" />
+                          )}
+                        </Button>
+                      </>
+                    )}
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
+          </div>
+          <TablePagination
+            page={journalsSafePage}
+            perPage={JOURNALS_PER_PAGE}
+            total={filteredJournals.length}
+            onChange={setJournalsPage}
+            label="journal"
+          />
           <div className="border-t bg-gray-50/50 px-4 py-2 text-xs text-gray-400">
             {filteredJournals.length} of {journals.length} journal{journals.length !== 1 ? "s" : ""}
           </div>

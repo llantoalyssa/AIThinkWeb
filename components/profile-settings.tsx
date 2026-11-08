@@ -32,6 +32,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { UserMenu } from "@/components/user-menu";
+import SidebarCollapseHandle from "@/components/sidebar-collapse-handle";
 import NotificationBell from "@/components/notification-bell";
 function slugify(name: string): string {
   return name
@@ -91,6 +92,8 @@ export function ProfileSettingsPage({
   const [uploadingSignature, setUploadingSignature] = useState(false);
   const signatureInputRef = useRef<HTMLInputElement>(null);
   const isAffair = ["adviser", "associate_dean", "dean", "vcrdes"].includes(role);
+  const routesOwnedGroups =
+    role === "associate_dean" || role === "dean" || role === "vcrdes";
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -358,26 +361,17 @@ export function ProfileSettingsPage({
             <Menu className="h-5 w-5" />
           )}
         </button>
-        <button
-          onClick={() => setSidebarExpanded(!sidebarExpanded)}
-          className="hidden md:flex h-9 w-9 items-center justify-center rounded-lg text-gray-400 hover:bg-gray-100 hover:text-gray-600"
-          title={sidebarExpanded ? "Collapse sidebar" : "Expand sidebar"}
-        >
-          {sidebarExpanded ? (
-            <ChevronLeft className="h-4 w-4" />
-          ) : (
-            <ChevronRight className="h-4 w-4" />
-          )}
-        </button>
+
         <h1 className="text-lg font-semibold text-[#333] flex-1">
           Profile Settings
         </h1>
         {
 }
         <NotificationBell
+          withOwnedGroupSlugs={routesOwnedGroups}
           routerPush={(href) => router.push(href)}
           allHref={`${routeBase}/${urlUserId}/notifications`}
-          hrefFor={(n) => {
+          hrefFor={(n, ctx) => {
             if (!n.submissionId) {
               return `${routeBase}/${urlUserId}/notifications`;
             }
@@ -385,6 +379,9 @@ export function ProfileSettingsPage({
               return n.groupName
                 ? `${routeBase}/${urlUserId}/group/${slugify(n.groupName)}/submission/${n.submissionId}`
                 : `${routeBase}/${urlUserId}/notifications`;
+            }
+            if (ctx.ownedGroupSlug) {
+              return `${routeBase}/${urlUserId}/group/${ctx.ownedGroupSlug}/submission/${n.submissionId}`;
             }
             return `${routeBase}/${urlUserId}/submission/${n.submissionId}`;
           }}
@@ -399,7 +396,7 @@ export function ProfileSettingsPage({
             className="absolute inset-0 bg-black/30"
             onClick={() => setMobileMenuOpen(false)}
           />
-          <aside className="absolute left-0 top-0 bottom-0 w-56 bg-white shadow-xl">
+          <aside className="absolute left-0 top-14 bottom-0 z-40 w-64 overflow-y-auto bg-white shadow-xl">
             <nav className="flex flex-col gap-1 p-3 pt-6">
               {navItems.map((item) => (
                 <button
@@ -429,11 +426,13 @@ export function ProfileSettingsPage({
       )}
 
       <div className="flex flex-1">
-        {}
+        {
+}
+        <div className="group/sidebar relative hidden shrink-0 self-start sticky top-14 h-[calc(100vh-3.5rem)] md:block">
         <aside
-          className={`hidden md:flex flex-col border-r bg-white transition-all duration-200 self-start sticky top-14 h-[calc(100vh-3.5rem)] overflow-y-auto ${
-            sidebarExpanded ? "w-56" : "w-16"
-          } shrink-0`}
+          className={`flex h-full flex-col border-r bg-white transition-all duration-200 overflow-y-auto ${
+            sidebarExpanded ? "w-64" : "w-16"
+          }`}
         >
           <nav className="flex flex-col gap-1 p-2 pt-4">
             {navItems.map((item) => (
@@ -462,9 +461,14 @@ export function ProfileSettingsPage({
             ))}
           </nav>
         </aside>
+          <SidebarCollapseHandle
+            expanded={sidebarExpanded}
+            onToggle={() => setSidebarExpanded((v) => !v)}
+          />
+        </div>
 
         <main className="flex-1 overflow-auto">
-          <div className="mx-auto max-w-3xl px-4 py-6 sm:px-6">
+          <div className="mx-auto w-full px-4 py-6 sm:px-6 lg:px-8">
             {}
             <div className="rounded-2xl border border-gray-200 bg-white shadow-sm">
               <div className="border-b border-gray-100 bg-gradient-to-r from-[#8B1A1A]/5 to-transparent px-6 py-6 flex items-center gap-4">

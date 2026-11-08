@@ -4,6 +4,9 @@ import { createClient } from "@/server/supabase/server";
 import { getCurrentUser } from "@/server/actions/auth";
 
 type ApproverRole = "associate_dean" | "dean" | "vcrdes";
+
+// ── Types ──────────────────────────────────────────────────────────
+
 export type ChatMessage = {
   id: string;
   submissionId: string;
@@ -20,13 +23,11 @@ export type ChatParticipant = {
   role: "student" | "adviser" | "associate_dean" | "dean" | "vcrdes";
   srCode?: string;
 };
+
 export type ChatConversation = {
   role: "adviser" | "associate_dean" | "dean" | "vcrdes";
-
   label: string;
-
   available: boolean;
-
   unread: number;
 };
 
@@ -35,13 +36,9 @@ export type GetChatResult =
       success: true;
       data: {
         messages: ChatMessage[];
-
         other: ChatParticipant | null;
-
         me: ChatParticipant;
-
         submissionId: string;
-
         withRole: string;
       };
     }
@@ -54,6 +51,9 @@ export type SendChatResult =
 export type ConversationsResult =
   | { success: true; data: ChatConversation[] }
   | { success: false; error: string };
+
+// ── Helper: resolve a participant's display info ───────────────────
+
 type ProfileRow = {
   id: string;
   first_name?: string | null;
@@ -70,6 +70,7 @@ function displayName(p: ProfileRow): string {
     .join(" ")
     .trim() || "User";
 }
+
 async function getSubmissionForParticipant(
   submissionId: string,
   userId: string,
@@ -87,7 +88,7 @@ async function getSubmissionForParticipant(
     .single();
 
   if (!sub) {
-    return { ok: false, error: "Submission not found." };
+    return { ok: false, error: "TAF has been routed." };
   }
 
   const isStudent = sub.submitted_by === userId;
@@ -97,6 +98,8 @@ async function getSubmissionForParticipant(
     .eq("id", sub.group_id)
     .single();
   const isAdviser = !!group && group.adviser_id === userId;
+
+  // Approver roles: the TAF is in (or has been routed through) their step
   const approverRoles: string[] = ["associate_dean", "dean", "vcrdes"];
   const route = (sub.approval_route as string[]) || [];
   const hasSeenRoute = route.includes(role);
@@ -112,6 +115,9 @@ async function getSubmissionForParticipant(
 
   return { ok: true, submission: sub };
 }
+
+// ── Get chat messages ──────────────────────────────────────────────
+
 export async function getSubmissionChat(
   submissionId: string,
   withRole?: string,
@@ -131,23 +137,31 @@ export async function getSubmissionChat(
   if (!access.ok) {
     return { success: false, error: access.error };
   }
+
+  // Determine the conversation role
   const isStudent = access.submission.submitted_by === user.id;
   const roleList = ["adviser", "associate_dean", "dean", "vcrdes"];
   let conversationRole = (withRole || "adviser") as string;
   if (!roleList.includes(conversationRole)) conversationRole = "adviser";
+
+  // Student can open any conversation; approvers only their own
   if (!isStudent && conversationRole !== user.role) {
     return { success: false, error: "You can only view your own conversation with the student." };
   }
+
+  // Load current user's profile
   const { data: myProfile } = await supabase
     .from("profiles")
     .select("id, first_name, middle_initial, last_name, suffix, sr_code, role")
     .eq("id", user.id)
     .maybeSingle();
+
+  // Load the other party's profile
   let otherId: string | null = null;
   let otherRole: ChatParticipant["role"] = "student";
 
   if (isStudent) {
-
+    // Student's counterpart: the person in the selected conversation
     if (conversationRole === "adviser") {
       otherId = await getGroupAdviserId(access.submission.group_id);
       otherRole = "adviser";
@@ -156,7 +170,7 @@ export async function getSubmissionChat(
       otherRole = conversationRole as ChatParticipant["role"];
     }
   } else {
-
+    // Approver's counterpart: always the student
     otherId = access.submission.submitted_by;
     otherRole = "student";
   }
@@ -166,6 +180,8 @@ export async function getSubmissionChat(
     .select("id, first_name, middle_initial, last_name, suffix, sr_code, role")
     .eq("id", otherId ?? "")
     .maybeSingle();
+
+  // Load messages for this conversation only
   const { data: rows, error: msgErr } = await supabase
     .from("submission_chat_messages")
     .select("id, submission_id, sender_id, message, created_at, with_role")
@@ -177,6 +193,8 @@ export async function getSubmissionChat(
     console.error("[submission-chat] Failed to load messages:", msgErr);
     return { success: false, error: "Failed to load messages." };
   }
+
+  // Fetch sender names for all distinct senders
   const senderIds = Array.from(
     new Set((rows || []).map((r: any) => r.sender_id as string)),
   );
@@ -229,6 +247,9 @@ export async function getSubmissionChat(
     data: { messages, other, me, submissionId, withRole: conversationRole },
   };
 }
+
+// ── List available conversations (for the student) ──────────────────
+
 export async function getChatConversations(
   submissionId: string,
 ): Promise<ConversationsResult> {
@@ -262,7 +283,7 @@ export async function getChatConversations(
   };
 
   if (isStudent) {
-
+    // Student sees all four conversations (available ones shown by route)
     const roles = ["adviser", "associate_dean", "dean", "vcrdes"] as const;
     const convos: ChatConversation[] = [];
     for (const role of roles) {
@@ -281,6 +302,8 @@ export async function getChatConversations(
     }
     return { success: true, data: convos };
   }
+
+  // Approver: only their own conversation with the student
   const { count } = await supabase
     .from("submission_chat_messages")
     .select("id", { count: "exact", head: true })
@@ -298,6 +321,9 @@ export async function getChatConversations(
     ],
   };
 }
+
+// ── Send a chat message ────────────────────────────────────────────
+
 export async function sendSubmissionChatMessage(
   submissionId: string,
   message: string,
@@ -326,6 +352,7 @@ export async function sendSubmissionChatMessage(
   if (!access.ok) {
     return { success: false, error: access.error };
   }
+
   const isStudent = access.submission.submitted_by === user.id;
   const roleList = ["adviser", "associate_dean", "dean", "vcrdes"];
   let conversationRole = (withRole || "adviser") as string;
@@ -367,6 +394,9 @@ export async function sendSubmissionChatMessage(
     },
   };
 }
+
+// ── Helper: get the adviser id of a group ──────────────────────────
+
 async function getGroupAdviserId(groupId: string): Promise<string | null> {
   const supabase = await createClient();
   const { data } = await supabase
@@ -376,6 +406,10 @@ async function getGroupAdviserId(groupId: string): Promise<string | null> {
     .maybeSingle();
   return (data?.adviser_id as string) ?? null;
 }
+
+// ── Helper: find the active user id for an approver role ───────────
+// (single-active-account rule: exactly one active account per role)
+
 async function findActiveUserForRole(
   role: ApproverRole,
 ): Promise<string | null> {

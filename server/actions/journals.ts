@@ -1,8 +1,46 @@
 "use server";
 
 import { createClient } from "@/server/supabase/server";
+import { describePage, layoutPageText } from "@/lib/pdf-layout";
+import {
+  analysisRatePerToken,
+  resolveAnalysisModel,
+  resolveAnalysisProvider,
+} from "@/server/analysis/ai-analysis";
+import { getMyGrantedPermissions } from "@/server/actions/permissions";
+import { embedText } from "@/server/analysis/similarity";
+import { logAudit } from "@/server/audit";
 
-export async function extractPdfText(fileUrl: string): Promise<string> {
+const PAGE_TEXT_MIN_CHARS = 40;
+
+function normalizeExtractedText(text: string): string {
+  return text
+    .replace(/\u00AD/g, "")
+    .replace(/[\u200B-\u200D\uFEFF]/g, "")
+    .replace(/[\u00A0\u2000-\u200A\u202F\u205F]/g, " ")
+    .replace(/ﬁ/g, "fi")
+    .replace(/ﬂ/g, "fl")
+    .replace(/ﬀ/g, "ff")
+    .replace(/ﬃ/g, "ffi")
+    .replace(/ﬄ/g, "ffl")
+    .replace(/ﬅ/g, "ft")
+    .replace(/ﬆ/g, "st")
+    // line-end hyphenation: "conclu-\nsion" → "conclusion"
+    .replace(/([a-z])-\n([a-z])/g, "$1$2")
+    .replace(/[ \t]+\n/g, "\n");
+}
+
+export type PdfPagesResult =
+  | {
+      success: true;
+      /** One entry per page, in page order (empty string = no text layer). */
+      pages: string[];
+      /** 1-based page numbers whose text layer is too thin to trust. */
+      thinPages: number[];
+    }
+  | { success: false; error: string };
+
+export async function extractPdfPages(fileUrl: string): Promise<PdfPagesResult> {
   const supabase = await createClient();
 
   const storagePath = fileUrl.replace(/^.*\/journals\//, "");
@@ -12,7 +50,7 @@ export async function extractPdfText(fileUrl: string): Promise<string> {
 
   if (downloadError || !fileData) {
     console.error("Download error:", downloadError);
-    return "";
+    return { success: false, error: "Could not download the PDF." };
   }
 
   try {
@@ -39,21 +77,90 @@ export async function extractPdfText(fileUrl: string): Promise<string> {
       standardFontDataUrl,
     }).promise;
 
+    const numPages = doc.numPages;
     const pages: string[] = [];
-    for (let i = 1; i <= doc.numPages; i++) {
-      const page = await doc.getPage(i);
-      const content = await page.getTextContent();
-      const text = content.items
-        .map((item: any) => item.str)
-        .join(" ");
-      pages.push(text);
+
+    try {
+      for (let i = 1; i <= numPages; i++) {
+        const page = await doc.getPage(i);
+        try {
+          const viewport = page.getViewport({ scale: 1 });
+          const content = await page.getTextContent({
+            includeMarkedContent: false,
+          });
+
+          const items = [];
+          for (const raw of content.items as Array<Record<string, unknown>>) {
+            if (typeof raw.str !== "string" || raw.str.length === 0) continue;
+            const transform = raw.transform as number[] | undefined;
+            const height = Math.abs(Number(raw.height) || 0);
+            items.push({
+              str: raw.str,
+              // transform = [a, b, c, d, e, f]: e = x of the origin, f = baseline y.
+              x: Number(transform?.[4] ?? 0),
+              y: Number(transform?.[5] ?? 0),
+              width: Number(raw.width) || 0,
+              // A missing height would collapse the line clustering, so fall
+              // back to the font size the transform encodes.
+              height: height || Math.abs(Number(transform?.[3]) || 0) || 10,
+              hasEOL: Boolean(raw.hasEOL),
+            });
+          }
+
+          // Reading order: strips → columns → lines (lib/pdf-layout.ts).
+          const layout = layoutPageText(items, viewport.width);
+          if (layout.thin) {
+            // Counts only — never log document contents.
+            console.warn(`[extractPdfText] ${describePage(layout, i)}`);
+          }
+          pages.push(layout.text);
+        } finally {
+          // cleanup() is sync in some builds and a promise in others; never let
+          // it mask the real error.
+          try {
+            await page.cleanup();
+          } catch {
+            /* ignore */
+          }
+        }
+      }
+    } finally {
+      try {
+        await doc.cleanup();
+      } catch {
+        /* ignore */
+      }
     }
 
-    return pages.join("\n").trim();
+    const joined = pages.join("\n\n").replace(/\n{3,}/g, "\n\n").trim();
+    const totalChars = joined.length;
+    console.info(
+      `[extractPdfText] ${numPages} page(s) → ${totalChars} chars (${(totalChars / Math.max(numPages, 1)).toFixed(0)}/page)`,
+    );
+    const normalized = pages.map((p) => normalizeExtractedText(p));
+    const thinPages = normalized
+      .map((p, index) => ({ index, chars: p.trim().length }))
+      .filter((entry) => entry.chars < PAGE_TEXT_MIN_CHARS)
+      .map((entry) => entry.index + 1);
+
+    return {
+      success: true,
+      pages: normalized,
+      thinPages,
+    };
   } catch (err) {
     console.error("PDF extraction error:", err);
-    return "";
+    return { success: false, error: "Could not read the PDF." };
   }
+}
+
+export async function extractPdfText(fileUrl: string): Promise<string> {
+  const result = await extractPdfPages(fileUrl);
+  if (!result.success) return "";
+  return result.pages
+    .filter((p) => p.trim().length > 0)
+    .join("\n\n")
+    .trim();
 }
 
 import { getCurrentUser } from "./auth";
@@ -116,18 +223,9 @@ function extractEmbeddingCore(title: string, fullText: string): string {
   return core.length >= 40 ? core : title.trim();
 }
 
-// ── Helper: build an SBERT embedding for a text string ─────
-
 async function embedJournalText(text: string): Promise<number[] | null> {
   try {
-    const { pipeline } = await import("@xenova/transformers");
-    const pipe = (await pipeline(
-      "feature-extraction",
-      "Xenova/all-MiniLM-L6-v2"
-    )) as any;
-    const cleaned = text.replace(/\s+/g, " ").trim().slice(0, 8_000);
-    const result = await pipe(cleaned, { pooling: "mean", normalize: true });
-    return Array.from(result.data) as number[];
+    return await embedText(text);
   } catch (embedError) {
     console.error("Error generating embedding:", embedError);
     return null;
@@ -141,7 +239,6 @@ export type JournalView = {
   year: string | null;
   fileUrl: string;
   hasText: boolean;
-  /** Plain text for overlap highlighting next to the PDF. */
   extractedText: string;
 };
 
@@ -193,8 +290,13 @@ export async function getAllJournals(): Promise<
     return { success: false, error: "You must be logged in." };
   }
 
-  if (user.role !== "department") {
-    return { success: false, error: "Only department accounts can view journals." };
+  const granted = await getMyGrantedPermissions();
+  if (!granted.includes("pages.journals")) {
+    return {
+      success: false,
+      error:
+        "This account has not been granted the Journals page. Ask a department account to grant it.",
+    };
   }
 
   const supabase = await createClient();
@@ -382,22 +484,28 @@ export async function logJournalExtractCost(input: {
   completionTokens: number;
   totalTokens: number;
   journalTitle?: string;
+  /** Whatever extractJournalMetadata() reported — the provider that ANSWERED. */
+  provider?: "gemini" | "opencode-go";
+  model?: string;
 }) {
   const user = await getCurrentUser();
   if (!user) return;
 
   const supabase = await createClient();
 
-  const aiCost = (input.promptTokens / 1_000_000) * 0.14 +
-                 (input.completionTokens / 1_000_000) * 1.10;
+  const provider = input.provider ?? resolveAnalysisProvider();
+  const model = input.model ?? resolveAnalysisModel();
+  const rates = analysisRatePerToken();
+  const aiCost =
+    input.promptTokens * rates.input + input.completionTokens * rates.output;
   const totalCost = Math.round(aiCost * 1e8) / 1e8;
 
   await supabase.from("analysis_cost_logs").insert({
     user_id: user.id,
     title: input.journalTitle || "Journal metadata extraction",
     source: "journal",
-    ai_provider: "opencode-go",
-    ai_model: process.env.DEEPSEEK_MODEL || "deepseek-v4-flash",
+    ai_provider: provider,
+    ai_model: model,
     ai_input_tokens: input.promptTokens,
     ai_output_tokens: input.completionTokens,
     ai_cost: totalCost,
@@ -442,6 +550,15 @@ export async function deleteJournal(
     console.error("Error deleting journal:", error);
     return { success: false, error: "Failed to delete journal." };
   }
+
+  await logAudit({
+    action: "journal_deleted",
+    category: "deletion",
+    entityType: "journal",
+    entityId: journalId,
+    description: "Deleted a journal from the reference library.",
+    actor: { id: user.id, email: user.email, role: user.role },
+  });
 
   return { success: true, data: null };
 }

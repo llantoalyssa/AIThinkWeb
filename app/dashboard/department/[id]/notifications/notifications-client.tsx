@@ -1,4 +1,6 @@
 "use client";
+
+
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import {
@@ -21,20 +23,25 @@ import {
   type ApprovalNotification,
 } from "@/server/actions/approval-workflow";
 import { UserMenu } from "@/components/user-menu";
+import SidebarCollapseHandle from "@/components/sidebar-collapse-handle";
 import NotificationBell from "@/components/notification-bell";
-import {
-  departmentNav,
-  departmentNotificationsHref,
-} from "../department-nav";
+import TablePagination from "@/components/table-pagination";
+import { departmentNotificationsHref } from "../department-nav";
+import { navItemsFor } from "@/components/nav-items";
 
 type Props = {
   initialUser: CurrentUser;
+  /** EFFECTIVE permission keys — the department's nav is filtered by these. */
+  initialPermissions: string[];
   initialNotifications: ApprovalNotification[];
   initialError: string | null;
 };
 
+const NOTIFS_PER_PAGE = 10;
+
 export default function DepartmentNotificationsPage({
   initialUser,
+  initialPermissions,
   initialNotifications,
   initialError,
 }: Props) {
@@ -44,12 +51,28 @@ export default function DepartmentNotificationsPage({
   const [notifs, setNotifs] = useState<ApprovalNotification[]>(
     initialNotifications,
   );
+  const [notifsPage, setNotifsPage] = useState(1);
   const [err, setErr] = useState<string | null>(initialError);
   const [sidebarExpanded, setSidebarExpanded] = useState(true);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
-  const navItems = departmentNav(userId);
+  const notifsTotalPages = Math.max(
+    1,
+    Math.ceil(notifs.length / NOTIFS_PER_PAGE),
+  );
+  const notifsSafePage = Math.min(notifsPage, notifsTotalPages);
+  const pagedNotifs = notifs.slice(
+    (notifsSafePage - 1) * NOTIFS_PER_PAGE,
+    notifsSafePage * NOTIFS_PER_PAGE,
+  );
+
+  const navItems = navItemsFor({
+    role: "department",
+    userId,
+    permissions: initialPermissions,
+  });
   const allHref = departmentNotificationsHref(userId);
+
   function markOneRead(n: ApprovalNotification) {
     setNotifs((prev) =>
       prev.map((x) => (x.id === n.id ? { ...x, readAt: new Date().toISOString() } : x)),
@@ -59,7 +82,7 @@ export default function DepartmentNotificationsPage({
         window.dispatchEvent(new Event("aithink-notifications-read"));
       })
       .catch(() => {
-
+        // cosmetic — the badge re-syncs on the next focus/route change
       });
   }
 
@@ -90,7 +113,7 @@ export default function DepartmentNotificationsPage({
 
   return (
     <div className="flex min-h-screen flex-col bg-gray-50/50">
-      {}
+      {/* ── Header (same shell as the dashboard) ─────────────────────── */}
       <header className="sticky top-0 z-30 flex h-14 items-center gap-3 border-b bg-white px-4 shadow-sm">
         <button
           onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
@@ -100,25 +123,26 @@ export default function DepartmentNotificationsPage({
           {mobileMenuOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
         </button>
 
-        <button
-          onClick={() => setSidebarExpanded(!sidebarExpanded)}
-          className="hidden md:flex h-9 w-9 items-center justify-center rounded-lg text-gray-400 hover:bg-gray-100 hover:text-gray-600"
-          title={sidebarExpanded ? "Collapse sidebar" : "Expand sidebar"}
-        >
-          {sidebarExpanded ? (
-            <ChevronLeft className="h-4 w-4" />
-          ) : (
-            <ChevronRight className="h-4 w-4" />
-          )}
-        </button>
+
 
         <h1 className="text-lg font-semibold text-[#333] flex-1">AIThink</h1>
 
-        {}
+        {/* Bell — previously missing on every department page except Profile. */}
         <NotificationBell
           routerPush={(href) => router.push(href)}
           allHref={allHref}
-          hrefFor={() => null}
+          hrefFor={(n) => {
+            if (n.submissionId) {
+              return `/dashboard/department/${userId}/submission/${n.submissionId}`;
+            }
+            if (n.type === "new_feedback") {
+              return `/dashboard/department/${userId}?section=feedback`;
+            }
+            if (n.groupId) {
+              return `/dashboard/department/${userId}?section=groups`;
+            }
+            return `/dashboard/department/${userId}?section=submissions`;
+          }}
         />
         <UserMenu
           user={initialUser}
@@ -128,10 +152,11 @@ export default function DepartmentNotificationsPage({
       </header>
 
       <div className="flex flex-1 relative">
-        {}
+        {/* ── Desktop sidebar ─────────────────────────────────────────── */}
+        <div className="group/sidebar relative hidden shrink-0 self-start sticky top-14 h-[calc(100vh-3.5rem)] md:block">
         <aside
-          className={`hidden md:flex flex-col border-r bg-white transition-all duration-200 self-start sticky top-14 h-[calc(100vh-3.5rem)] overflow-y-auto ${
-            sidebarExpanded ? "w-48" : "w-16"
+          className={`flex h-full flex-col border-r bg-white transition-all duration-200 overflow-y-auto ${
+            sidebarExpanded ? "w-64" : "w-16"
           } shrink-0`}
         >
           <nav className="flex flex-col gap-1 p-2 pt-4">
@@ -154,15 +179,20 @@ export default function DepartmentNotificationsPage({
             ))}
           </nav>
         </aside>
+          <SidebarCollapseHandle
+            expanded={sidebarExpanded}
+            onToggle={() => setSidebarExpanded((v) => !v)}
+          />
+        </div>
 
-        {}
+        {/* ── Mobile drawer ───────────────────────────────────────────── */}
         {mobileMenuOpen && (
           <div className="fixed inset-0 z-20 md:hidden">
             <div
               className="absolute inset-0 bg-black/30"
               onClick={() => setMobileMenuOpen(false)}
             />
-            <aside className="absolute left-0 top-0 bottom-0 w-56 overflow-y-auto bg-white shadow-xl">
+            <aside className="absolute left-0 top-14 bottom-0 z-40 w-64 overflow-y-auto bg-white shadow-xl">
               <nav className="flex flex-col gap-1 p-3 pt-6">
                 {navItems.map((item) => (
                   <button
@@ -187,9 +217,9 @@ export default function DepartmentNotificationsPage({
           </div>
         )}
 
-        {}
+        {/* ── Content ─────────────────────────────────────────────────── */}
         <main className="flex-1 overflow-auto">
-          <div className="mx-auto max-w-3xl px-4 py-6">
+          <div className="w-auto px-4 py-6">
             <div className="mb-6 flex items-center justify-between gap-3">
               <div className="flex items-center gap-3">
                 <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-[#8B1A1A]/10">
@@ -230,7 +260,7 @@ export default function DepartmentNotificationsPage({
               </div>
             ) : (
               <div className="space-y-2">
-                {notifs.map((n) => (
+                {pagedNotifs.map((n) => (
                   <div
                     key={n.id}
                     className="flex items-stretch gap-2 rounded-xl border border-gray-200 bg-white p-3 transition-colors hover:bg-gray-50 hover:shadow-sm"
@@ -291,6 +321,13 @@ export default function DepartmentNotificationsPage({
                     )}
                   </div>
                 ))}
+                <TablePagination
+                  page={notifsSafePage}
+                  perPage={NOTIFS_PER_PAGE}
+                  total={notifs.length}
+                  onChange={setNotifsPage}
+                  label="notification"
+                />
               </div>
             )}
           </div>

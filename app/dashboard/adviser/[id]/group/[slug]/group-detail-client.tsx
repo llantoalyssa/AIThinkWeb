@@ -5,6 +5,7 @@ import { useRouter, useParams } from 'next/navigation'
 import { toast } from 'sonner'
 import { type CurrentUser } from '@/server/actions/auth'
 import { UserMenu } from '@/components/user-menu'
+import SidebarCollapseHandle from "@/components/sidebar-collapse-handle";
 import { createClient } from '@/server/supabase/client'
 import { htmlToPlainText } from '@/lib/html'
 import { formatName } from '@/lib/constants'
@@ -43,7 +44,6 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import {
-  BarChart3,
   Users,
   Bell,
   Loader2,
@@ -63,14 +63,11 @@ import {
   AlertCircle,
   Eye,
   Send,
+  Archive,
+  RotateCcw,
 } from 'lucide-react'
-
-type NavItem = {
-  icon: React.ReactNode;
-  label: string;
-  href?: string;
-  active?: boolean;
-};
+import { navItemsFor, type NavItem } from '@/components/nav-items'
+import { getMyGrantedPermissions } from '@/server/actions/permissions'
 
 // Helper to convert name to URL slug — used for redirect after rename
 function slugify(name: string): string {
@@ -115,6 +112,20 @@ type Props = {
   initialGroup: AdvisoryGroup;
   initialStudents: GroupStudent[];
   initialSubmissions: GroupSubmission[];
+  /**
+   * The role's dashboard root this detail page belongs to, e.g.
+   * "/dashboard/dean". Defaults to the adviser's. The associate dean and dean
+   * supervise their own groups, so they reuse this whole screen.
+   */
+  basePath?: string;
+  /**
+   * Explicit destination for the "Back to Groups" button. The ROLES THAT OWN
+   * GROUPS reach their list differently — the approver roles use ?tab=groups on
+   * their dashboard, the department uses ?section=groups on its console — so a
+   * caller whose list is not a tab passes the exact URL here. Omitted (the
+   * adviser, associate dean and dean) the behaviour is exactly as before.
+   */
+  backHref?: string;
 };
 
 export default function AdvisoryGroupDetailPage({
@@ -123,19 +134,60 @@ export default function AdvisoryGroupDetailPage({
   initialGroup,
   initialStudents,
   initialSubmissions,
+  basePath = "/dashboard/adviser",
+  backHref,
 }: Props) {
   const router = useRouter();
   const params = useParams<{ id: string; slug: string }>();
   const userId = params.id;
   const slug = params.slug;
-
-  const navItems: NavItem[] = [
-    { icon: <BarChart3 className="h-5 w-5" />, label: "Dashboard", href: `/dashboard/adviser/${userId}` },
-    { icon: <Bell className="h-5 w-5" />, label: "Notifications", href: `/dashboard/adviser/${userId}/notifications` },
-  ];
+  // The real route prefix for THIS page — e.g. "/dashboard/dean". The prop
+  // defaults to "/dashboard/adviser" and no caller overrides it, so deans and
+  // associate deans were being sent to adviser URLs (hence the 404 when opening
+  // a TAF from a group). Read from the browser path instead; it is only ever
+  // used inside event handlers, so it cannot cause a hydration mismatch.
+  const base =
+    (typeof window !== "undefined"
+      ? window.location.pathname.match(/^(\/dashboard\/[^/]+)/)?.[1]
+      : undefined) ?? basePath;
 
   const [currentUser, setCurrentUser] = useState<CurrentUser | null>(initialUser);
   const [group, setGroup] = useState<AdvisoryGroup | null>(initialGroup);
+
+  // SAME nav as the dashboard this group belongs to — from the ONE shared
+  // source (components/nav-items.tsx). An adviser gets their own two items; an
+  // associate dean / dean (they own groups too) gets their approver nav with
+  // Advisory Group highlighted — otherwise the side nav silently lost every
+  // item the moment a group was opened.
+  // NOTE: declared AFTER the currentUser state on purpose — reading it earlier
+  // would hit the temporal dead zone.
+  const isSupervisorRole =
+    currentUser?.role === "associate_dean" || currentUser?.role === "dean";
+
+  // The same grants the dashboard resolved — a granted page item must stay in
+  // the nav when a group is opened, and the capability items (Analytics /
+  // Approved TAF) are filtered by the same keys.
+  const [permissions, setPermissions] = useState<string[] | undefined>(undefined);
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const keys = await getMyGrantedPermissions();
+      if (!cancelled) setPermissions(keys);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const navItems: NavItem[] = navItemsFor({
+    role: currentUser?.role ?? "adviser",
+    userId,
+    permissions,
+  }).map((item) =>
+    // This page IS the Advisory Group destination, so that item stays
+    // highlighted — the same item the dashboard highlights for ?tab=groups.
+    item.id === "groups" ? { ...item, active: true } : item,
+  );
   const [loading, setLoading] = useState(!initialGroup);
   const [sidebarExpanded, setSidebarExpanded] = useState(true);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -235,7 +287,10 @@ export default function AdvisoryGroupDetailPage({
 
   // View submission routing
   function handleViewSubmission(sub: GroupSubmission) {
-    router.push(`/dashboard/adviser/${userId}/group/${slug}/submission/${sub.id}`);
+    // Every role now has a GROUP-scoped submission route, so a TAF opened from a
+    // group stays in the group's context and Back returns to that group instead
+    // of dumping the user into the TAF Submissions tab.
+    router.push(`${base}/${userId}/group/${slug}/submission/${sub.id}`);
   }
 
   // ── FALLBACK ONLY ─────────────────────────────────────────────────────
@@ -286,7 +341,7 @@ export default function AdvisoryGroupDetailPage({
         }
         setSubmissionsLoading(false);
       } else {
-        router.push(`/dashboard/adviser/${userResult.id}`);
+        router.push(`${base}/${userResult.id}`);
         return;
       }
 
@@ -365,7 +420,7 @@ export default function AdvisoryGroupDetailPage({
       // If the name changed, redirect to the new slug
       const newSlug = slugify(result.data.name);
       if (newSlug !== slug) {
-        router.replace(`/dashboard/adviser/${userId}/group/${newSlug}`);
+        router.replace(`${base}/${userId}/group/${newSlug}`);
       }
     } else {
       setUpdateError(result.error);
@@ -396,7 +451,7 @@ export default function AdvisoryGroupDetailPage({
     document.body.style.pointerEvents = '';
     window.requestAnimationFrame(() => {
       document.body.style.pointerEvents = '';
-      router.push(`/dashboard/adviser/${currentUser?.id ?? userId}`);
+      router.push(`${base}/${currentUser?.id ?? userId}`);
     });
   }
 
@@ -422,8 +477,21 @@ export default function AdvisoryGroupDetailPage({
   }
 
   function goBack() {
+    // A caller that knows its own group list supplies the exact URL (the
+    // department's list is ?section=groups, not a dashboard tab).
+    if (backHref) {
+      router.push(backHref);
+      return;
+    }
     if (currentUser) {
-      router.push(`/dashboard/adviser/${currentUser.id}`);
+      // Back must land on the GROUP list, not the dashboard landing tab — for
+      // the supervisor roles that landing tab is Research Analytics, which is
+      // why Back used to look like it ignored the group page entirely.
+      router.push(
+        isSupervisorRole
+          ? `${base}/${currentUser.id}?tab=groups`
+          : `${base}/${currentUser.id}`,
+      );
     }
   }
 
@@ -450,13 +518,6 @@ export default function AdvisoryGroupDetailPage({
           {mobileMenuOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
         </button>
 
-        <button
-          onClick={() => setSidebarExpanded(!sidebarExpanded)}
-          className="hidden md:flex h-9 w-9 items-center justify-center rounded-lg text-gray-400 hover:bg-gray-100 hover:text-gray-600"
-          title={sidebarExpanded ? 'Collapse sidebar' : 'Expand sidebar'}
-        >
-          {sidebarExpanded ? <ChevronLeft className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
-        </button>
 
         <h1 className="text-lg font-semibold text-[#333] flex-1">
           AIThink
@@ -466,17 +527,21 @@ export default function AdvisoryGroupDetailPage({
         <AdviserApprovalBell
           adviserId={userId}
           routerPush={(href) => router.push(href)}
-          routeBase={`/dashboard/adviser/${userId}`}
+          routeBase={`${base}/${userId}`}
         />
 
-        <UserMenu user={currentUser} userId={userId} routeBase="/dashboard/adviser" />
+        <UserMenu user={currentUser} userId={userId} routeBase={base} />
       </header>
 
       <div className="flex flex-1 relative">
         {/* ── Desktop sidebar ───────────────────────────────────────────────────────────────── */}
+        <div className="group/sidebar relative hidden shrink-0 self-start sticky top-14 h-[calc(100vh-3.5rem)] md:block">
         <aside
-          className={`hidden md:flex flex-col border-r bg-white transition-all duration-200 self-start sticky top-14 h-[calc(100vh-3.5rem)] overflow-y-auto ${
-            sidebarExpanded ? 'w-48' : 'w-16'
+          className={`flex h-full flex-col border-r bg-white transition-all duration-200 overflow-y-auto ${
+            // Same expanded width as the role's dashboard sidebar (w-64), so the
+            // nav does not visibly resize when a group is opened. Advisers keep
+            // their narrower w-48.
+            sidebarExpanded ? (isSupervisorRole ? 'w-64' : 'w-64') : 'w-16'
           } shrink-0`}
         >
           <nav className="flex flex-col gap-1 p-2 pt-4">
@@ -487,6 +552,13 @@ export default function AdvisoryGroupDetailPage({
                 <button
                   key={item.label}
                   onClick={() => item.href && router.push(item.href)}
+                  // Prefetch on hover/focus so switching sections isn't a cold load.
+                  onMouseEnter={() => {
+                    if (item.href) router.prefetch(item.href);
+                  }}
+                  onFocus={() => {
+                    if (item.href) router.prefetch(item.href);
+                  }}
                   className={`flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm transition-colors ${
                     item.active
                       ? 'bg-[#8B1A1A]/10 text-[#8B1A1A] font-medium'
@@ -509,6 +581,11 @@ export default function AdvisoryGroupDetailPage({
             })}
           </nav>
         </aside>
+          <SidebarCollapseHandle
+            expanded={sidebarExpanded}
+            onToggle={() => setSidebarExpanded((v) => !v)}
+          />
+        </div>
 
         {/* ── Mobile overlay drawer ───────────────────────────────────────────────────────────── */}
         {mobileMenuOpen && (
@@ -517,11 +594,14 @@ export default function AdvisoryGroupDetailPage({
               className="absolute inset-0 bg-black/30"
               onClick={() => setMobileMenuOpen(false)}
             />
-            <aside className="absolute left-0 top-0 bottom-0 w-56 overflow-y-auto bg-white shadow-xl">
+            <aside className="absolute left-0 top-14 bottom-0 z-40 w-64 overflow-y-auto bg-white shadow-xl">
               <nav className="flex flex-col gap-1 p-3 pt-6">
                 {navItems.map((item) => (
                   <button
                     key={item.label}
+                    onMouseEnter={() => {
+                      if (item.href) router.prefetch(item.href);
+                    }}
                     onClick={() => {
                       if (item.href) {
                         router.push(item.href);
@@ -617,9 +697,17 @@ export default function AdvisoryGroupDetailPage({
                           key={student.id}
                           className="flex items-center gap-3 p-2.5 rounded-lg bg-white border hover:shadow-sm transition-shadow"
                         >
-                          <div className="flex h-9 w-9 items-center justify-center rounded-full bg-[#8B1A1A]/10 text-[#8B1A1A] text-xs font-semibold shrink-0">
-                            {student.firstName.charAt(0)}{student.lastName.charAt(0)}
-                          </div>
+                          {student.avatarUrl ? (
+                            <img
+                              src={student.avatarUrl}
+                              alt=""
+                              className="h-9 w-9 shrink-0 rounded-full border border-gray-200 object-cover"
+                            />
+                          ) : (
+                            <div className="flex h-9 w-9 items-center justify-center rounded-full bg-[#8B1A1A]/10 text-[#8B1A1A] text-xs font-semibold shrink-0">
+                              {student.firstName.charAt(0)}{student.lastName.charAt(0)}
+                            </div>
+                          )}
                           <div className="min-w-0 flex-1">
                             <p className="text-sm font-medium text-[#333] truncate leading-tight">
                               {formatName({
@@ -660,12 +748,25 @@ export default function AdvisoryGroupDetailPage({
                       <FolderOpen className="h-5 w-5 text-[#8B1A1A]" />
                     </div>
                     <div className="flex-1 min-w-0">
-                      <h1 className="text-xl font-bold text-[#333]">{group?.name}</h1>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h1 className="text-xl font-bold text-[#333] break-words">{group?.name}</h1>
+                        {group && !group.isActive && (
+                          <span className="inline-flex items-center gap-1 rounded-full border border-amber-200 bg-amber-50 px-2.5 py-0.5 text-[11px] font-semibold text-amber-700">
+                            <Archive className="h-3 w-3" />
+                            Archived
+                          </span>
+                        )}
+                        {group?.isActive && (
+                          <span className="inline-flex items-center gap-1 rounded-full border border-green-200 bg-green-50 px-2.5 py-0.5 text-[11px] font-semibold text-green-700">
+                            Active
+                          </span>
+                        )}
+                      </div>
                       <p className="text-xs text-gray-500 mt-0.5">
                         Created on {group && new Date(group.createdAt).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })}
                       </p>
                       {group?.description && (
-                        <p className="text-sm text-gray-600 mt-2 leading-relaxed">
+                        <p className="text-sm text-gray-600 mt-2 leading-relaxed whitespace-pre-wrap break-words">
                           {group.description}
                         </p>
                       )}
@@ -673,7 +774,11 @@ export default function AdvisoryGroupDetailPage({
                   </div>
                   
                   {/* Join Code */}
-                  <div className="mt-3 pt-3 border-t flex items-center gap-3">
+                  {/* flex-wrap: with the Archived → Unarchive action added, the
+                      join-code pill + two buttons no longer fit one row on a
+                      phone and the Unarchive button spilled outside the card.
+                      Wrapping keeps every control inside. */}
+                  <div className="mt-3 flex flex-wrap items-center gap-2 border-t pt-3 sm:gap-3">
                     <div className="flex items-center gap-2 px-3 py-1.5 bg-amber-50 border border-amber-200 rounded-md">
                       <span className="text-xs text-amber-600 font-medium uppercase">Join Code:</span>
                       <span className="text-sm font-mono font-bold text-amber-700 tracking-wider">{group?.joinCode}</span>
@@ -698,11 +803,41 @@ export default function AdvisoryGroupDetailPage({
                           setGroup(prev => prev ? { ...prev, joinCode: result.newCode } : null);
                         }
                       }}
-                      disabled={!group}
+                      disabled={!group || !group.isActive}
+                      title={
+                        group && !group.isActive
+                          ? "Archived groups have a retired join code — reactivate the group to issue a new one."
+                          : undefined
+                      }
                       className="text-xs h-7"
                     >
                       Regenerate Code
                     </Button>
+                    {/* An archived group can be brought back: unarchive sets
+                        is_active = true, which restores student visibility for
+                        joining and re-enables the join code. */}
+                    {group && !group.isActive && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={async () => {
+                          if (!group) return;
+                          const result = await updateAdvisoryGroup({
+                            id: group.id,
+                            isActive: true,
+                          });
+                          if (result.success) {
+                            setGroup((prev) =>
+                              prev ? { ...prev, isActive: true } : null,
+                            );
+                          }
+                        }}
+                        className="text-xs h-7 border-green-200 text-green-700 hover:bg-green-50"
+                      >
+                        <RotateCcw className="mr-1 h-3.5 w-3.5" />
+                        Unarchive
+                      </Button>
+                    )}
                   </div>
                 </div>
 
@@ -787,27 +922,16 @@ export default function AdvisoryGroupDetailPage({
                         >
                           <div className="flex items-start justify-between gap-3">
                             <div className="min-w-0 flex-1">
-                              <div className="flex items-center gap-2 mb-1">
-                                <h3 className="text-sm font-semibold text-[#333]">
+                              <div className="mb-1">
+                                <h3 className="line-clamp-2 text-sm font-semibold leading-snug text-[#333]">
                                   {sub.tafSnapshot.proposedTitle || 'Untitled'}
                                 </h3>
-                                <span
-                                  className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium border shrink-0 ${
-                                    SUBMISSION_STATUS_COLORS[sub.status] || 'bg-gray-100 text-gray-600'
-                                  }`}
-                                >
-                                  {SUBMISSION_STATUS_ICONS[sub.status]}
-                                  {SUBMISSION_STATUS_LABELS[sub.status] || sub.status}
-                                </span>
                               </div>
                               <p className="text-xs text-gray-500">
                                 Submitted by <span className="font-medium text-[#333]">{sub.studentName || 'Unknown'}</span>
                                 {sub.studentSrCode && sub.studentSrCode !== '—' && (
                                   <> • {sub.studentSrCode}</>
                                 )}
-                              </p>
-                              <p className="text-xs text-gray-400 mt-1 leading-relaxed line-clamp-2">
-                                {htmlToPlainText(sub.tafSnapshot.background) || 'No background provided.'}
                               </p>
                             </div>
                             <div className="flex flex-col items-end gap-1 shrink-0">
@@ -819,6 +943,18 @@ export default function AdvisoryGroupDetailPage({
                               </span>
                               <span className="text-xs text-gray-400">
                                 {sub.combinedScore}% similarity
+                              </span>
+                              {/* Status lives under the similarity, not beside
+                                  the title: on a phone the badge beside a long
+                                  title squeezed the title into two cramped
+                                  lines. */}
+                              <span
+                                className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium ${
+                                  SUBMISSION_STATUS_COLORS[sub.status] || 'bg-gray-100 text-gray-600'
+                                }`}
+                              >
+                                {SUBMISSION_STATUS_ICONS[sub.status]}
+                                {SUBMISSION_STATUS_LABELS[sub.status] || sub.status}
                               </span>
                             </div>
                           </div>
@@ -834,22 +970,6 @@ export default function AdvisoryGroupDetailPage({
         </main>
       </div>
 
-      {/* ── Mobile bottom nav ───────────────────────────────────────────────────────────────────── */}
-      <nav className="md:hidden flex items-center justify-around border-t bg-white px-2 py-1 safe-area-bottom">
-        {navItems.map((item) => (
-          <button
-            key={item.label}
-            className={`flex flex-col items-center gap-0.5 px-3 py-2 rounded-lg text-xs transition-colors ${
-              item.active
-                ? 'text-[#8B1A1A]'
-                : 'text-gray-400 hover:text-gray-600'
-            }`}
-          >
-            {item.icon}
-            <span className="text-[10px]">{item.label}</span>
-          </button>
-        ))}
-      </nav>
 
       {/* ── Footer ────────────────────────────────────────────────────────────────────────────────── */}
       <footer className="hidden md:block bg-[#8B1A1A] text-white text-center text-xs py-3">
@@ -886,12 +1006,16 @@ export default function AdvisoryGroupDetailPage({
               <Label htmlFor="edit-description">Description</Label>
               <Textarea
                 id="edit-description"
-                placeholder="Brief description of this advisory group..."
+                placeholder="Short description of this advisory group..."
                 value={editDescription}
                 onChange={(e) => setEditDescription(e.target.value)}
                 disabled={updating}
-                rows={3}
+                rows={2}
+                maxLength={200}
               />
+              <p className="text-right text-[11px] text-gray-400">
+                {editDescription.length}/200
+              </p>
             </div>
             <DialogFooter>
               <Button 

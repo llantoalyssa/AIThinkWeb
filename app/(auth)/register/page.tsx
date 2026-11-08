@@ -13,10 +13,12 @@ import { Separator } from "@/components/ui/separator";
 import { Eye, EyeOff, Loader2 } from "lucide-react";
 
 const NAME_ALLOWED_RE = /^[\p{L} .'-]+$/u;
-
+// A suffix additionally allows a comma ("Jr., III").
 const SUFFIX_ALLOWED_RE = /^[\p{L} .,'-]+$/u;
 const NAME_DISALLOWED_RE = /[^\p{L} .'-]/gu;
 const SUFFIX_DISALLOWED_RE = /[^\p{L} .,'-]/gu;
+
+/** Drops any character not allowed in a name, as the user types. */
 function sanitizeName(value: string, allowComma = false): string {
   return value.replace(allowComma ? SUFFIX_DISALLOWED_RE : NAME_DISALLOWED_RE, "");
 }
@@ -87,6 +89,8 @@ export default function RegisterForm() {
     } else if (!email.toLowerCase().endsWith(ALLOWED_EMAIL_DOMAIN)) {
       errors.email = `Must be a valid ${ALLOWED_EMAIL_DOMAIN} email`;
     } else {
+      // The email's local part must BE the SR code, e.g.
+      // 23-93627@g.batstate-u.edu.ph for SR code 23-93627.
       const emailLocalPart = email.trim().toLowerCase().split("@")[0];
       const srNorm = srCode.trim().toLowerCase();
       if (srNorm && emailLocalPart !== srNorm) {
@@ -113,6 +117,9 @@ export default function RegisterForm() {
       setFieldErrors((prev) => ({ ...prev, [field]: undefined }));
     }
   }
+
+  // Format SR Code as digits, auto-inserting a dash after the first 2
+  // digits: "00-00000". Strips any non-digit input; max 2 + 5 digits.
   function formatSrCode(raw: string): string {
     const digits = raw.replace(/\D/g, "").slice(0, 7);
     if (digits.length <= 2) return digits;
@@ -128,6 +135,8 @@ export default function RegisterForm() {
         provider: "google",
         options: {
           redirectTo: `${window.location.origin}/auth/callback`,
+          // hd filters Google's account chooser to this Workspace domain
+          // (a hint); the callback route enforces the domain server-side.
           queryParams: {
             hd: ALLOWED_EMAIL_DOMAIN.replace("@", ""),
             prompt: "select_account",
@@ -242,6 +251,8 @@ export default function RegisterForm() {
               placeholder="M"
               value={middleInitial}
               onChange={(e) => {
+                // Single letter only — reject digits, punctuation (incl. "."),
+                // and anything past the first character as it is typed.
                 setMiddleInitial(
                   e.target.value.replace(/[^A-Za-z]/g, "").slice(0, 1),
                 );

@@ -6,7 +6,7 @@ export const SOURCE_META: Record<
   taf_analyze: {
     label: "TAF Analyze",
     description:
-      "First analysis of a student's Thesis Adviser Form (V1). Runs SBERT internal matching, Google Scholar search, and AI classification (SDG, field, gap analysis, recommendations).",
+      "First analysis of a student's Topic Abstract Form (V1). Runs SBERT internal matching, Google Scholar search, and AI classification (SDG, field, gap analysis, recommendations).",
     badgeClass: "bg-indigo-50 text-indigo-700 border border-indigo-200",
     icon: <BrainCircuit className="h-3.5 w-3.5" />,
   },

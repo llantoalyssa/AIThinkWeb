@@ -11,13 +11,12 @@ export type AuditActor = {
 export type LogAuditInput = {
   action: AuditAction | string;
   category?: AuditCategory;
-
   description?: string;
   entityType?: string;
   entityId?: string | null;
-
   entityLabel?: string | null;
   metadata?: Record<string, unknown>;
+
   actor?: AuditActor;
 };
 
@@ -28,20 +27,41 @@ function actorName(u: {
   const name = [u.firstName, u.lastName].filter(Boolean).join(" ").trim();
   return name || null;
 }
+
 export async function logAudit(input: LogAuditInput): Promise<void> {
   try {
     let actor = input.actor ?? null;
 
-    if (!actor) {
+    if (!actor || !actor.name) {
       const { getCurrentUser } = await import("@/server/actions/auth");
-      const user = await getCurrentUser();
+      const user = await getCurrentUser().catch(() => null);
       if (user) {
         actor = {
-          id: user.id,
-          email: user.email,
-          name: actorName(user),
-          role: user.role,
+          id: actor?.id ?? user.id,
+          email: actor?.email ?? user.email,
+          name: actor?.name ?? actorName(user),
+          role: actor?.role ?? user.role,
         };
+      }
+    }
+
+    if (actor && !actor.name && (actor.id || actor.email)) {
+      const lookup = createAdminClient();
+      if (lookup) {
+        const query = lookup
+          .from("profiles")
+          .select("first_name, last_name");
+        const { data } = await (actor.id
+          ? query.eq("id", actor.id).maybeSingle()
+          : query.eq("email", actor.email as string).maybeSingle());
+        const found = data as
+          | { first_name?: string | null; last_name?: string | null }
+          | null;
+        const full = actorName({
+          firstName: found?.first_name,
+          lastName: found?.last_name,
+        });
+        if (full) actor = { ...actor, name: full };
       }
     }
 
@@ -53,7 +73,6 @@ export async function logAudit(input: LogAuditInput): Promise<void> {
 
     const admin = createAdminClient();
     if (!admin) {
-
       console.error("[audit] service role key missing — event not recorded");
       return;
     }
@@ -72,6 +91,7 @@ export async function logAudit(input: LogAuditInput): Promise<void> {
     });
 
     if (error) {
+
       console.error(
         `[audit] could not log "${action}":`,
         error.code === "42P01"
@@ -101,9 +121,7 @@ export type AuditLogQuery = {
   perPage?: number;
   action?: string | null;
   category?: string | null;
-
   search?: string | null;
-
   from?: string | null;
   to?: string | null;
 };
@@ -127,7 +145,12 @@ export async function getAuditLogs(
   const user = await getCurrentUser();
   if (!user) return { success: false, error: "You must be logged in." };
   if (user.role !== "department") {
-    return { success: false, error: "Only department accounts can view the audit trail." };
+
+    const { getGrantedPermissions } = await import("@/server/actions/permissions");
+    const granted = await getGrantedPermissions(user.id);
+    if (!granted.includes("pages.audit")) {
+      return { success: false, error: "Only department accounts can view the audit trail." };
+    }
   }
 
   const perPage = Math.min(Math.max(params.perPage ?? AUDIT_PER_PAGE, 5), 100);
@@ -152,7 +175,6 @@ export async function getAuditLogs(
 
   const search = params.search?.trim();
   if (search) {
-
     const safe = search.replace(/[,()*]/g, " ").trim();
     if (safe) {
       query = query.or(
@@ -195,6 +217,7 @@ export async function getAuditLogs(
 
   return { success: true, rows, total: count ?? rows.length, page, perPage };
 }
+
 export async function getRecentAuditLogs(limit = AUDIT_PER_PAGE) {
   return getAuditLogs({ page: 1, perPage: limit });
 }

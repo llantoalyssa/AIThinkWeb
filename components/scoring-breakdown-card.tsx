@@ -42,7 +42,68 @@ function ScoringSideTable({
         {(ASPECT_WEIGHT_METH * 100).toFixed(0)}% + overall{" "}
         {(ASPECT_WEIGHT_FULL * 100).toFixed(0)}%)
       </p>
-      <div className="overflow-x-auto">
+      {/* Phones: one card per match. The 5-column table needs ~480px, so on a
+          phone it scrolled sideways and the label and its numbers were never
+          visible together. */}
+      <div className="space-y-2 sm:hidden">
+        {side.steps.map((s) => (
+          <div
+            key={`m-${s.rank}`}
+            className="rounded-lg border border-gray-200 p-2.5"
+          >
+            <div className="flex items-start gap-1.5">
+              <span className="text-[11px] font-semibold text-gray-600">
+                #{s.rank}
+              </span>
+              <span
+                className="line-clamp-2 flex-1 text-[11px] leading-snug text-gray-500"
+                title={s.label}
+              >
+                {s.label}
+              </span>
+              {(s.weakTopicalOverlap || s.campusNeighborOnly) && (
+                <span className="shrink-0 rounded border border-amber-200 bg-amber-50 px-1 py-0.5 text-[9px] font-medium text-amber-700">
+                  {s.campusNeighborOnly ? "campus" : "weak"}
+                </span>
+              )}
+            </div>
+            <dl className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-[10px]">
+              <div className="flex items-baseline justify-between gap-1">
+                <dt className="text-gray-400">Raw</dt>
+                <dd className="font-medium text-gray-600">
+                  {s.raw.toFixed(2)}%
+                </dd>
+              </div>
+              <div className="flex items-baseline justify-between gap-1">
+                <dt className="text-gray-400">Calibrated</dt>
+                <dd className="font-medium text-[#333]">
+                  {s.reduced.toFixed(2)}%
+                </dd>
+              </div>
+              <div className="flex items-baseline justify-between gap-1">
+                <dt className="text-gray-400">Rank wt</dt>
+                <dd className="font-medium text-gray-600">
+                  {(s.weight * 100).toFixed(2)}%
+                </dd>
+              </div>
+              <div className="flex items-baseline justify-between gap-1">
+                <dt className="text-gray-400">Contribution</dt>
+                <dd className="font-semibold text-[#333]">
+                  {s.contribution.toFixed(2)}
+                </dd>
+              </div>
+            </dl>
+          </div>
+        ))}
+        <div className="flex items-baseline justify-between rounded-lg bg-gray-50 px-2.5 py-1.5 text-[11px]">
+          <span className="font-medium text-gray-600">Aggregate</span>
+          <span className="font-bold text-[#333]">
+            {side.aggregate.toFixed(2)}%
+          </span>
+        </div>
+      </div>
+
+      <div className="hidden overflow-x-auto sm:block">
         <table className="w-full min-w-[480px] text-[11px]">
         <thead className="text-gray-400">
           <tr>
@@ -95,7 +156,7 @@ function ScoringSideTable({
         </tbody>
         </table>
       </div>
-      <div className="mt-2 space-y-2 max-h-72 overflow-y-auto pr-1">
+      <div className="mt-2 space-y-2 pr-1 sm:max-h-72 sm:overflow-y-auto">
         {side.steps.map((s) => (
           <div key={`aspect-${s.rank}`} className="rounded border border-gray-100 p-1.5">
             <p className="text-[10px] font-medium text-gray-600 truncate px-1" title={s.label}>
@@ -167,7 +228,7 @@ export default function ScoringBreakdownCard({
             3. Combine ({(INTERNAL_WEIGHT * 100).toFixed(0)}% internal +{" "}
             {(EXTERNAL_WEIGHT * 100).toFixed(0)}% external)
           </p>
-          <p className="font-mono text-[11px] text-[#444]">
+          <p className="break-words font-mono text-[10px] leading-relaxed text-[#444] sm:text-[11px]">
             ({breakdown.internalWeight.toFixed(2)} ×{" "}
             {breakdown.internal.aggregate.toFixed(2)}) + (
             {breakdown.externalWeight.toFixed(2)} ×{" "}

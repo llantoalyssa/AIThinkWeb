@@ -301,10 +301,15 @@ export default function TopicAbstractFormEditor({ tafId, initialTaf, onBack, onS
     // of the saved data, so the user keeps their in-progress edits.
     try {
       const draft = window.localStorage.getItem(storageKey);
-      if (draft) {
+      // A submitted TAF is a frozen snapshot: local leftovers from before the
+      // submission must NOT be merged back into it (that produced a "Restored
+      // your unsaved draft" toast on an already-submitted form).
+      const draftable = result.data.status !== "submitted";
+      if (draft && draftable) {
         const parsed = JSON.parse(draft) as Partial<FormFields>;
         if (parsed && typeof parsed === "object") {
           const local = normalizeFields(parsed);
+          let changed = false;
           setFields((prev) =>
             // Field-by-field: a BLANK value in the local cache must never wipe
             // content that is already saved in the database. Merging the whole
@@ -312,19 +317,24 @@ export default function TopicAbstractFormEditor({ tafId, initialTaf, onBack, onS
             // out saved fields.
             (Object.keys(local) as (keyof FormFields)[]).reduce<FormFields>(
               (acc, key) => {
-                acc[key] =
+                const nextValue =
                   fieldHasContent(local[key]) || !fieldHasContent(prev[key])
                     ? local[key]
                     : prev[key];
+                if (nextValue !== prev[key]) changed = true;
+                acc[key] = nextValue;
                 return acc;
               },
               { ...prev },
             ),
           );
-          if (!restoreNotifiedRef.current) {
+          // Announce only a REAL difference: a stale cache that matches what is
+          // already saved changed nothing, so "Restored…" would be a lie.
+          if (changed && !restoreNotifiedRef.current) {
             restoreNotifiedRef.current = true;
-            toast.info("Restored your unsaved draft.", {
-              description: "Your in-progress edits were recovered.",
+            toast.info("Restored your unsaved edits.", {
+              description:
+                "These changes were never saved to the server — review them, then Save.",
             });
           }
         }
@@ -422,10 +432,15 @@ export default function TopicAbstractFormEditor({ tafId, initialTaf, onBack, onS
         if (parsed && typeof parsed === "object") {
           // eslint-disable-next-line react-hooks/set-state-in-effect
           setFields(normalizeFields(parsed));
-          if (!restoreNotifiedRef.current) {
+          // Only announce a draft that actually HAS content — an empty cache
+          // (or one holding the blank form) restored nothing.
+          const hasContent = (Object.keys(normalizeFields(parsed)) as (keyof FormFields)[])
+            .some((key) => fieldHasContent(normalizeFields(parsed)[key]));
+          if (hasContent && !restoreNotifiedRef.current) {
             restoreNotifiedRef.current = true;
-            toast.info("Restored your unsaved draft.", {
-              description: "Your in-progress edits were recovered.",
+            toast.info("Restored your unsaved edits.", {
+              description:
+                "These changes were never saved to the server — review them, then Save.",
             });
           }
         }
@@ -1124,6 +1139,10 @@ export default function TopicAbstractFormEditor({ tafId, initialTaf, onBack, onS
                       value={fields[fieldKey]}
                       onChange={(value) => updateField(fieldKey, value)}
                       readOnly={isLocked}
+                      /* A read-only TipTap box keeps its normal contrast while the
+                         disabled Title input greys out — same lock, two looks.
+                         Dim the wrapper so every locked field matches. */
+                      className={isLocked ? "opacity-60" : undefined}
                       placeholder={`Enter ${FIELD_LABELS[fieldKey].toLowerCase()}`}
                       minHeight={
                         fieldKey === "literatureReview" ||

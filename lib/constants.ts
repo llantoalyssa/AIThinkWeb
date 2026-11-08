@@ -58,6 +58,22 @@ export const ROLE_DASHBOARD_ROUTES: Record<UserRole, string> = {
 export function rolePath(role: UserRole): string {
   return ROLE_DASHBOARD_ROUTES[role] || `/dashboard/${role}`;
 }
+
+/**
+ * Where a role LANDs after signing in.
+ *
+ * The department console's home is Admin Analytics, not the Users list — the
+ * office's first question of the day is numbers, not account management. Every
+ * other role still lands on its dashboard root; add a key here if that changes.
+ */
+const ROLE_LANDING_SEGMENTS: Partial<Record<UserRole, string>> = {
+  department: "/admin-analytics",
+};
+
+export function roleLandingPath(role: UserRole, userId: string): string {
+  const base = ROLE_DASHBOARD_ROUTES[role] || "/dashboard";
+  return `${base}/${userId}${ROLE_LANDING_SEGMENTS[role] ?? ""}`;
+}
 export function formatName(parts: {
   firstName?: string | null;
   middleInitial?: string | null;

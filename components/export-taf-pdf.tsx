@@ -59,6 +59,7 @@ export default function ExportTafPdf({ submission }: Props) {
                 #taf-pdf-export li {
                   font-size: 12px; line-height: 1.75; color: #111;
                   text-align: justify; hyphens: auto;
+                  overflow-wrap: anywhere; word-break: break-word;
                 }
                 #taf-pdf-export p { margin: 0 0 4px; text-indent: 24px; }
                 #taf-pdf-export section > div > p:first-child { text-indent: 0; }

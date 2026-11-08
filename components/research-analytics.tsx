@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import {
   getResearchAnalytics,
   type AnalyticsData,
@@ -9,8 +10,9 @@ import {
   type SDGCount,
   type FieldCount,
 } from "@/server/actions/research-analytics";
-import { Loader2, X, Search, Download, Award, TrendingDown, TrendingUp, BarChart3, FolderTree, Target, CheckCircle2, CalendarDays } from "lucide-react";
-import { IT_FIELDS, normalizeFieldOfIt } from "@/lib/constants";
+import { Loader2, X, Search, Download, Award, TrendingDown, TrendingUp, BarChart3, FolderTree, Target, CheckCircle2, CalendarDays, ChevronRight } from "lucide-react";
+import { IT_FIELDS, normalizeFieldOfIt, rolePath, type UserRole } from "@/lib/constants";
+import { groupSlug } from "@/lib/slug";
 import JournalViewerButton from "@/components/journal-viewer-button";
 const SDG_MEANINGS_CLIENT: Record<string, string> = {
   "1": "No Poverty",
@@ -56,13 +58,13 @@ function ColumnBar({
       className={`group flex flex-1 flex-col items-stretch justify-end ${onClick ? "cursor-pointer" : "cursor-default"}`}
     >
       <div className="mb-1 text-center text-xs font-bold text-gray-500">{value}</div>
-      <div className="flex h-40 items-end overflow-hidden rounded-lg bg-gray-50/60">
+      <div className="flex h-28 items-end overflow-hidden rounded-lg bg-gray-50/60 sm:h-40">
         <div
           className="w-full rounded-t-md transition-all group-hover:opacity-80"
           style={{ height: `${pct}%`, backgroundColor: color }}
         />
       </div>
-      <div className="mt-1.5 text-center text-[10px] leading-tight text-[#333] font-medium line-clamp-3" style={{ height: "3rem" }}>
+      <div className="mt-1.5 line-clamp-2 text-center text-[9px] font-medium leading-tight text-[#333] sm:line-clamp-3 sm:text-[10px]" style={{ minHeight: "2.25rem" }}>
         {label}
       </div>
     </button>
@@ -78,8 +80,13 @@ function ColumnChart({
   onSelect?: (key: string) => void;
 }) {
   const max = Math.max(1, ...data.map((d) => d.value));
+  const minWidth = Math.max(data.length * 46, 280);
   return (
-    <div className="flex items-end gap-1 sm:gap-2">
+    <div className="-mx-1 overflow-x-auto pb-1">
+      <div
+        className="flex items-end gap-1 px-1 sm:gap-2"
+        style={{ minWidth: `${minWidth}px` }}
+      >
       {data.map((d) => (
         <ColumnBar
           key={d.key}
@@ -91,21 +98,37 @@ function ColumnChart({
           title={d.meaning}
         />
       ))}
+      </div>
     </div>
   );
 }
-function CapstoneRow({ c }: { c: ReferencedCapstone }) {
+function CapstoneRow({ c, onOpen }: { c: ReferencedCapstone; onOpen: (c: ReferencedCapstone) => void }) {
+  const count = c.referenceCount;
   return (
     <div className="flex items-start gap-2 rounded-lg border border-gray-100 bg-gray-50 px-3 py-2">
       <div className="flex-1 min-w-0">
         <p className="truncate text-[13px] font-medium text-[#333]" title={c.title}>{c.title}</p>
         <p className="truncate text-[11px] text-gray-500" title={c.authors || "Unknown author"}>{c.authors || "Unknown author"}</p>
       </div>
-      <span className="shrink-0 mt-0.5 rounded-full bg-[#8B1A1A]/10 px-2 py-0.5 text-[10px] font-bold text-[#8B1A1A]">
-        {c.referenceCount}×
-      </span>
+      <button
+        type="button"
+        onClick={(event) => {
+          event.stopPropagation();
+          onOpen(c);
+        }}
+        className="shrink-0 mt-0.5 min-w-[2.25rem] rounded-full bg-[#8B1A1A]/10 px-2 py-1 text-[10px] font-bold text-[#8B1A1A] hover:bg-[#8B1A1A]/20 transition-colors cursor-pointer"
+        title={`See the ${count} approved TAF${count === 1 ? "" : "s"} that referenced this capstone`}
+      >
+        {count}×
+      </button>
     </div>
   );
+}
+function formatApprovedDate(iso: string | null): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "—";
+  return d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
 }
 function ApprovedTable({
   rows,
@@ -231,16 +254,31 @@ function Dialog({
     clone.style.printColorAdjust = "exact";
     (clone.style as unknown as Record<string, string>).webkitPrintColorAdjust =
       "exact";
+    clone.querySelectorAll(".print-hide").forEach((node) => node.remove());
+
     document.body.appendChild(clone);
 
     const style = document.createElement("style");
     style.id = "analytics-print-style";
     style.textContent = `
+      @page { size: auto; margin: 0; }
       @media print {
         body > *:not(#analytics-print-root) { display: none !important; }
-        #analytics-print-root { display: block !important; width: 100% !important; max-width: 100% !important; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+        #analytics-print-root {
+          display: block !important;
+          width: 100% !important;
+          max-width: 100% !important;
+          padding: 12mm 10mm !important;
+          -webkit-print-color-adjust: exact !important;
+          print-color-adjust: exact !important;
+        }
         #analytics-print-root * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
         #analytics-print-root .print-hide { display: none !important; }
+
+        #analytics-print-root .export-only { display: block !important; }
+
+        #analytics-print-root tr { break-inside: avoid; page-break-inside: avoid; }
+        #analytics-print-root thead { display: table-header-group; }
       }`;
     document.head.appendChild(style);
     setPrinting(true);
@@ -255,12 +293,14 @@ function Dialog({
   }
 
   return (
-    <div className="fixed inset-0 z-[80] flex items-center justify-center p-4">
+    <div className="fixed inset-0 z-[80] flex items-stretch justify-center sm:items-center sm:p-4">
       <div className="absolute inset-0 bg-black/40" onClick={onClose} />
-      <div className={`relative flex max-h-[90vh] w-full ${maxW} flex-col overflow-hidden rounded-2xl bg-white shadow-2xl`}>
-        <div className="flex items-center justify-between border-b bg-white px-5 py-3.5">
-          <h3 className="text-base font-semibold text-[#333] flex items-center gap-2">{title}</h3>
-          <div className="flex items-center gap-1">
+      <div
+        className={`relative flex h-[100dvh] max-h-[100dvh] w-full ${maxW} flex-col overflow-hidden bg-white shadow-2xl sm:h-auto sm:max-h-[90vh] sm:rounded-2xl`}
+      >
+        <div className="flex shrink-0 items-center justify-between gap-2 border-b bg-white px-3 py-3 sm:px-5 sm:py-3.5">
+          <h3 className="flex min-w-0 items-center gap-2 text-sm font-semibold text-[#333] sm:text-base [&>span]:min-w-0 [&>span]:truncate">{title}</h3>
+          <div className="flex shrink-0 items-center gap-1">
             {exportTarget && (
               <button
                 type="button"
@@ -276,21 +316,44 @@ function Dialog({
             </button>
           </div>
         </div>
-        <div className="flex-1 overflow-y-auto p-5">{children}</div>
+        <div className="flex-1 overflow-y-auto overscroll-contain p-3 sm:p-5">{children}</div>
       </div>
     </div>
   );
 }
 export default function ResearchAnalytics({
   role,
+  userId,
   initialData,
+  hrefMode = "flat",
 }: {
-  role: string;
+  role: UserRole;
+
+  userId: string;
+  hrefMode?: "flat" | "group" | "none";
   initialData?: AnalyticsData | null;
 }) {
+  const router = useRouter();
   const [data, setData] = useState<AnalyticsData | null>(initialData ?? null);
   const [loading, setLoading] = useState(!initialData);
   const [err, setErr] = useState<string | null>(null);
+
+  const [refDetail, setRefDetail] = useState<ReferencedCapstone | null>(null);
+  function openRefDetail(c: ReferencedCapstone) {
+    setShowMore(null);
+    setRefDetail(c);
+  }
+  const canOpenTaf = hrefMode !== "none" && Boolean(userId);
+  function openApprovedTaf(submissionId: string, groupName = "") {
+    if (!canOpenTaf || !submissionId) return;
+    if (hrefMode === "group") {
+      router.push(
+        `${rolePath(role)}/${userId}/group/${groupSlug(groupName)}/submission/${submissionId}?from=approved`,
+      );
+      return;
+    }
+    router.push(`${rolePath(role)}/${userId}/submission/${submissionId}?from=approved`);
+  }
   const didLoad = useRef(!!initialData);
   const [showMore, setShowMore] = useState<"most" | "least" | null>(null);
   const [sdgDialog, setSdgDialog] = useState(false);
@@ -400,6 +463,13 @@ export default function ResearchAnalytics({
       : null;
   const highestSim = toSim(highestSimilarity);
   const lowestSim = toSim(lowestSimilarity);
+  const exportStamp = new Date().toLocaleDateString("en-PH", {
+    timeZone: "Asia/Manila",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  });
+
   const sdgRows = selectedSdg
     ? yearFilteredApproved.filter(
         (t) =>
@@ -435,7 +505,7 @@ export default function ResearchAnalytics({
   );
 
   const simCard = (
-    <Card title="Top &amp; Bottom Similarity" icon={<TrendingUp />} subtitle="Combined score on fully approved TAFs">
+    <Card title="Top &amp; Bottom Similarity" icon={<TrendingUp />} subtitle="">
       {highestSim ? (
         <SimilarityRow label="Highest" entry={highestSim} tone="bad" />
       ) : (
@@ -471,7 +541,7 @@ export default function ResearchAnalytics({
           <Empty text="No referenced capstones yet." />
         ) : (
           <div className="space-y-1.5">
-            {data.mostReferenced.slice(0, 4).map((c) => <CapstoneRow key={c.journalId} c={c} />)}
+            {data.mostReferenced.slice(0, 4).map((c) => <CapstoneRow key={c.journalId} c={c} onOpen={openRefDetail} />)}
           </div>
         )}
       </Card>
@@ -480,7 +550,7 @@ export default function ResearchAnalytics({
           <Empty text="No referenced capstones yet." />
         ) : (
           <div className="space-y-1.5">
-            {data.leastReferenced.slice(0, 4).map((c) => <CapstoneRow key={c.journalId + c.title} c={c} />)}
+            {data.leastReferenced.slice(0, 4).map((c) => <CapstoneRow key={c.journalId + c.title} c={c} onOpen={openRefDetail} />)}
           </div>
         )}
       </Card>
@@ -546,18 +616,12 @@ export default function ResearchAnalytics({
           </div>
         </>
       ) : (
-        <>
-          {}
-          <div className="grid grid-cols-1 gap-4 lg:grid-cols-12 mb-4">
-            <div className="lg:col-span-7">{sdgCard}</div>
-            <div className="lg:col-span-5">{simCard}</div>
-          </div>
-          {}
-          <div className="grid grid-cols-1 gap-4 lg:grid-cols-12">
-            <div className="lg:col-span-7">{foitCard}</div>
-            {capstoneCards}
-          </div>
-        </>
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-12">
+          <div className="order-1 lg:col-span-7">{sdgCard}</div>
+          <div className="order-2 lg:order-3 lg:col-span-7">{foitCard}</div>
+          <div className="order-3 lg:order-2 lg:col-span-5">{simCard}</div>
+          <div className="order-4 lg:col-span-5">{capstoneCards}</div>
+        </div>
       )}
 
       {}
@@ -571,15 +635,103 @@ export default function ResearchAnalytics({
                 <p className="font-medium text-[#333]">{c.title}</p>
                 <p className="text-xs text-gray-500">{c.authors || "Unknown author"}{c.year ? ` · ${c.year}` : ""}</p>
               </div>
-              <span className="shrink-0 rounded-full bg-[#8B1A1A]/10 px-2.5 py-1 text-[11px] font-bold text-[#8B1A1A]">
+              <button
+                type="button"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  openRefDetail(c);
+                }}
+                className="shrink-0 rounded-full bg-[#8B1A1A]/10 px-2.5 py-1 text-[11px] font-bold text-[#8B1A1A] hover:bg-[#8B1A1A]/20 transition-colors cursor-pointer"
+                title={`See the ${c.referenceCount} approved TAF${c.referenceCount === 1 ? "" : "s"} that referenced this capstone`}
+              >
                 Referenced {c.referenceCount}×
-              </span>
+              </button>
               <JournalViewerButton journalId={c.journalId} />
             </div>
           ))}
         </div>
       </Dialog>
 
+      {}
+      {
+
+}
+      <Dialog
+        open={refDetail !== null}
+        onClose={() => setRefDetail(null)}
+        title={
+          refDetail
+            ? `Referenced by ${refDetail.referenceCount} approved TAF${refDetail.referenceCount === 1 ? "" : "s"}`
+            : ""
+        }
+        size="lg"
+      >
+        {refDetail && (
+          <div className="space-y-3">
+            <div className="rounded-lg border border-gray-100 bg-gray-50 p-3">
+              <p className="font-medium text-[#333]">{refDetail.title}</p>
+              <p className="text-xs text-gray-500">
+                {refDetail.authors || "Unknown author"}
+                {refDetail.year ? ` · ${refDetail.year}` : ""}
+              </p>
+            </div>
+
+            {refDetail.referencedBy.length === 0 ? (
+              <Empty text="No approved TAF detail recorded for this capstone." />
+            ) : (
+              <div className="overflow-x-auto rounded-xl border border-gray-200">
+                <table className="w-full min-w-[640px] text-sm">
+                  <thead>
+                    <tr className="border-b bg-gray-50 text-left text-[11px] uppercase tracking-wide text-gray-500">
+                      <th className="px-3 py-2 font-semibold">TAF Title</th>
+                      <th className="px-3 py-2 font-semibold">Student</th>
+                      <th className="px-3 py-2 font-semibold">Advisory Group</th>
+                      <th className="px-3 py-2 font-semibold">Date</th>
+                      <th className="px-3 py-2" />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {refDetail.referencedBy.map((r) => (
+                      <tr
+                        key={r.submissionId || r.tafId}
+                        onClick={
+                          canOpenTaf
+                            ? () => openApprovedTaf(r.submissionId, r.groupName)
+                            : undefined
+                        }
+                        className={`border-b last:border-0 transition-colors ${
+                          canOpenTaf ? "cursor-pointer hover:bg-[#8B1A1A]/5" : ""
+                        }`}
+                        title={canOpenTaf ? "Open this approved TAF" : undefined}
+                      >
+                        <td className="px-3 py-2 text-[#333]">{r.title}</td>
+                        <td className="px-3 py-2 text-gray-600">
+                          {r.studentName}
+                          {r.studentSrCode ? (
+                            <span className="ml-1 text-xs text-gray-400">{r.studentSrCode}</span>
+                          ) : null}
+                        </td>
+                        <td className="px-3 py-2 text-gray-600">{r.groupName}</td>
+                        <td className="px-3 py-2 whitespace-nowrap text-gray-500">
+                          {formatApprovedDate(r.approvedAt)}
+                        </td>
+                        <td className="px-3 py-2 text-right text-[#8B1A1A]">
+                          {canOpenTaf && <ChevronRight className="ml-auto h-4 w-4" />}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            <p className="text-xs text-gray-400">
+              Only fully approved TAFs are counted.
+              {canOpenTaf ? " Click a row to open the TAF." : ""}
+            </p>
+          </div>
+        )}
+      </Dialog>
       {}
       <Dialog
         open={sdgDialog}
@@ -588,7 +740,20 @@ export default function ResearchAnalytics({
         exportTarget="analytics-export-root"
       >
         <div id="analytics-export-root">
-          <p className="mb-3 text-sm text-gray-500">Targeted by Topics — click a bar to see the fully approved TAFs for that SDG.</p>
+          <p className="print-hide mb-3 text-sm text-gray-500">
+            Targeted by Topics — click a bar to see the fully approved TAFs for that SDG.
+          </p>
+
+          {}
+          <div className="export-only mb-4 hidden border-b border-gray-200 pb-3">
+            <h1 className="text-lg font-bold text-[#333]">
+              Sustainable Development Goals — Fully Approved TAFs
+            </h1>
+            <p className="mt-1 text-xs leading-relaxed text-gray-500">
+              Fully approved Topic Abstract Forms grouped by UN Sustainable
+              Development Goal. Generated {exportStamp} · College of Informatics and Computing Sciences, Batangas State University TNEU – JPLPC Malvar.
+            </p>
+          </div>
           {}
           <div className="mb-4">
             <ColumnChart
@@ -619,9 +784,12 @@ export default function ResearchAnalytics({
             </div>
           )}
 
-          {}
-          <h4 className="mb-2 text-sm font-semibold text-[#333]">
-            Fully Approved TAFs{selectedSdg ? ` · ${selectedSdg.label}` : " · All SDGs — click a bar to filter"}
+          {
+}
+          <h4 className="print-hide mb-2 text-sm font-semibold text-[#333]">
+            Fully Approved TAFs
+            {selectedSdg ? ` · ${selectedSdg.label}` : " · All SDGs"}
+            <span> — click a bar to filter</span>
           </h4>
           <ApprovedTable rows={sdgRows} exportId="analytics-export-root" years={years} />
         </div>
@@ -636,7 +804,20 @@ export default function ResearchAnalytics({
         size="xl"
       >
         <div id="analytics-export-root-foit">
-          <p className="mb-3 text-sm text-gray-500">Targeted by Topics — click a bar to see the fully approved TAFs for that field.</p>
+          <p className="print-hide mb-3 text-sm text-gray-500">
+            Targeted by Topics — click a bar to see the fully approved TAFs for that field.
+          </p>
+
+          {}
+          <div className="export-only mb-4 hidden border-b border-gray-200 pb-3">
+            <h1 className="text-lg font-bold text-[#333]">
+              Field of Information Technology — Fully Approved TAFs
+            </h1>
+            <p className="mt-1 text-xs leading-relaxed text-gray-500">
+              Fully approved Topic Abstract Forms grouped by Field of Information
+              Technology. Generated {exportStamp} · College of Informatics and Computing Sciences, Batangas State University TNEU – JPLPC Malvar.
+            </p>
+          </div>
           <div className="mb-4">
             <ColumnChart
               color="#4f46e5"
@@ -662,8 +843,10 @@ export default function ResearchAnalytics({
             </div>
           )}
 
-          <h4 className="mb-2 text-sm font-semibold text-[#333]">
-            Fully Approved TAFs{selectedField ? ` · ${selectedField.field}` : " · All IT Fields — click a bar to filter"}
+          <h4 className="print-hide mb-2 text-sm font-semibold text-[#333]">
+            Fully Approved TAFs
+            {selectedField ? ` · ${selectedField.field}` : " · All IT Fields"}
+            <span> — click a bar to filter</span>
           </h4>
           <ApprovedTable rows={foitRows} exportId="analytics-export-root-foit" years={years} />
         </div>

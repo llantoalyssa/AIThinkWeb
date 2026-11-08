@@ -31,6 +31,9 @@ function mapRecent(raw: RawRecent): RecentTAFEntry {
     pinned: raw.pinned,
   };
 }
+
+// ── Get all recent TAFs for the current user ─────────────────────
+
 export async function getUserRecentTAFs(): Promise<
   { success: true; data: RecentTAFEntry[] } | { success: false; error: string }
 > {
@@ -56,6 +59,9 @@ export async function getUserRecentTAFs(): Promise<
     data: (data as unknown as RawRecent[]).map(mapRecent),
   };
 }
+
+// ── Add or update a recent TAF entry ─────────────────────────────
+
 export async function addRecentTAF(
   tafId: string,
   proposedTitle: string,
@@ -87,6 +93,9 @@ export async function addRecentTAF(
 
   return { success: true };
 }
+
+// ── Toggle pin status ───────────────────────────────────────────
+
 export async function togglePinRecentTAF(
   tafId: string
 ): Promise<{ success: true } | { success: false; error: string }> {
@@ -113,6 +122,9 @@ export async function togglePinRecentTAF(
   if (error) return { success: false, error: "Failed to toggle pin" };
   return { success: true };
 }
+
+// ── Remove from recents ────────────────────────────────────────
+
 export async function removeRecentTAF(
   tafId: string
 ): Promise<{ success: true } | { success: false; error: string }> {
@@ -130,6 +142,9 @@ export async function removeRecentTAF(
   if (error) return { success: false, error: "Failed to remove recent" };
   return { success: true };
 }
+
+// ── Update title ───────────────────────────────────────────────
+
 export async function updateRecentTAFTitle(
   tafId: string,
   proposedTitle: string
@@ -148,6 +163,9 @@ export async function updateRecentTAFTitle(
   if (error) return { success: false, error: "Failed to update title" };
   return { success: true };
 }
+
+// ── Update status ──────────────────────────────────────────────
+
 export async function updateRecentTAFStatus(
   tafId: string,
   status: string

@@ -8,7 +8,7 @@ export default function AuthLayout({
   return (
     <div className="flex min-h-screen flex-col">
       <div className="flex flex-1 flex-col md:flex-row">
-        {}
+        {/* ── Desktop branding panel (hidden on mobile) ──── */}
         <div className="hidden md:flex md:w-1/2 bg-[#EBEBEB] items-center justify-center p-8">
           <div className="flex flex-col items-center gap-6 bg-white rounded-xl p-6 shadow-sm max-w-2xl w-full">
             <img
@@ -28,12 +28,12 @@ export default function AuthLayout({
           </div>
         </div>
 
-        {}
+        {/* ── Form panel ─────────────────────────────────── */}
         <div className="flex flex-1 flex-col items-center p-4 sm:p-6 md:p-8 md:w-1/2 overflow-y-auto">
           <div className="my-auto w-full max-w-sm">
             {children}
 
-            {}
+            {/* ── Mobile-only branding below form ─────────────── */}
             <div className="mt-6 md:hidden">
               <div className="flex items-center gap-2 bg-[#EBEBEB] rounded-lg px-4 py-3">
                 <img
@@ -56,7 +56,7 @@ export default function AuthLayout({
         </div>
       </div>
 
-      {}
+      {/* ── Footer ────────────────────────────────────────── */}
       <footer className="bg-[#660111] text-white text-center text-xs py-3">
         <p>&copy; {new Date().getFullYear()} AIThink. All rights reserved.</p>
       </footer>

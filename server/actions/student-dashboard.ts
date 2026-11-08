@@ -1,4 +1,6 @@
 "use server";
+
+
 import { createClient } from "@/server/supabase/server";
 import { getCurrentUser } from "./auth";
 
@@ -7,18 +9,19 @@ export type DashboardTaf = {
   title: string;
   status: string;
   createdAt: string;
-  similarity: number;
+  similarity: number; // latest/lowest per the analysis result
 };
 
 export type StudentDashboardData = {
+  
   monthlyCounts: { month: string; count: number }[];
-
+  
   lowest: DashboardTaf | null;
-
+  
   highest: DashboardTaf | null;
-
+  
   pinned: DashboardTaf[];
-
+  
   recent: DashboardTaf[];
 };
 
@@ -34,6 +37,8 @@ export async function getStudentDashboardData(): Promise<StudentDashboardResult>
   }
 
   const supabase = await createClient();
+
+  // 1. All of the student's TAFs
   const { data: tafs, error: tafErr } = await supabase
     .from("topic_abstract_forms")
     .select("id, proposed_title, status, created_at, updated_at, submitted_at")
@@ -55,6 +60,8 @@ export async function getStudentDashboardData(): Promise<StudentDashboardResult>
   }[];
 
   const tafIds = tafRows.map((t) => t.id);
+
+  // 2. Analysis scores for these TAFs (latest version per TAF). 
   let analysisRows: { taf_id: string; combined_score: number | null }[] = [];
   if (tafIds.length > 0) {
     const { data, error } = await supabase
@@ -71,6 +78,7 @@ export async function getStudentDashboardData(): Promise<StudentDashboardResult>
       }[];
     }
   }
+
   const scoreByTaf = new Map<
     string,
     { lowest: number; latest: number }
@@ -92,15 +100,20 @@ export async function getStudentDashboardData(): Promise<StudentDashboardResult>
     createdAt: t.created_at || "",
     similarity: sim,
   });
+
+  // 3. Lowest & highest similarity TAF (use lowest score representative of
+  //    the TAF's best result; tie-break by most recently updated).
   let lowest: DashboardTaf | null = null;
   let highest: DashboardTaf | null = null;
   for (const t of tafRows) {
     const sc = scoreByTaf.get(t.id)?.lowest;
-    if (sc === undefined) continue;
+    if (sc === undefined) continue; // only TAFs that were analyzed
     const d = build(t, sc);
     if (!lowest || sc < lowest.similarity) lowest = d;
     if (!highest || sc > highest.similarity) highest = d;
   }
+
+  // 4. Monthly counts for the line chart — SUBMITTED TAFs only.
   const { data: submissions, error: subErr } = await supabase
     .from("group_taf_submissions")
     .select("taf_id, submitted_at")
@@ -117,8 +130,8 @@ export async function getStudentDashboardData(): Promise<StudentDashboardResult>
   const monthly = new Map<string, number>();
   for (const t of tafRows) {
     const subDate = submittedAt.get(t.id);
-    if (!subDate) continue;
-    const key = subDate.slice(0, 7);
+    if (!subDate) continue; // not submitted → excluded from the line chart
+    const key = subDate.slice(0, 7); // YYYY-MM (submission month)
     if (key && key.includes("-")) {
       monthly.set(key, (monthly.get(key) || 0) + 1);
     }
@@ -146,7 +159,7 @@ export async function getStudentDashboardData(): Promise<StudentDashboardResult>
         }
       }
     } else {
-
+      // Malformed keys — fall back to the sparse list.
       monthlyCounts.push(
         ...Array.from(monthly.entries())
           .map(([month, count]) => ({ month, count }))
@@ -154,6 +167,8 @@ export async function getStudentDashboardData(): Promise<StudentDashboardResult>
       );
     }
   }
+
+  // 5. Pinned + recent from user_taf_recents
   let recents: {
     taf_id: string;
     proposed_title: string | null;

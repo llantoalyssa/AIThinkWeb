@@ -3,6 +3,10 @@
 import { createClient } from "@/server/supabase/server";
 import { getCurrentUser } from "@/server/actions/auth";
 import { notify } from "@/server/actions/approval-workflow";
+import { createAdminClient } from "@/server/supabase/admin";
+
+
+
 export type AnnotationFieldKey =
   | "proposedTitle"
   | "background"
@@ -38,6 +42,8 @@ export type AnnotationCreateResult =
 export type AnnotationActionResult =
   | { success: true }
   | { success: false; error: string };
+
+
 async function accessibleRoles(
   submissionId: string,
   userId: string,
@@ -54,15 +60,32 @@ async function accessibleRoles(
     .eq("id", submissionId)
     .single();
 
-  if (!sub) return { ok: false, error: "Submission not found." };
+  if (!sub) return { ok: false, error: "TAF has been routed." };
 
   const isStudent = sub.submitted_by === userId;
   const { data: group } = await supabase
     .from("advisory_groups")
-    .select("adviser_id")
+    .select("adviser_id, is_active")
     .eq("id", sub.group_id)
     .single();
   const isAdviser = !!group && group.adviser_id === userId;
+
+
+  let archived = (group as { is_active?: boolean } | null)?.is_active === false;
+  if (!archived) {
+    const admin = createAdminClient();
+    if (admin) {
+      const { data: g } = await admin
+        .from("advisory_groups")
+        .select("is_active")
+        .eq("id", sub.group_id)
+        .maybeSingle();
+      archived = (g as { is_active?: boolean } | null)?.is_active === false;
+    }
+  }
+  if (archived) {
+    return { ok: true, roles: [], canComment: false };
+  }
 
   const route = (sub.approval_route as string[]) || [];
   const involved = new Set<string>(["adviser", ...route]);
@@ -70,10 +93,12 @@ async function accessibleRoles(
   const approved = !!sub.fully_approved_at;
 
   if (isStudent) {
-
     return { ok: true, roles: Array.from(involved), canComment: true };
   }
   if (isAdviser) {
+    return { ok: true, roles: Array.from(involved), canComment: true };
+  }
+  if (role === "department") {
     return { ok: true, roles: Array.from(involved), canComment: true };
   }
   if (["associate_dean", "dean", "vcrdes"].includes(role)) {
@@ -81,6 +106,7 @@ async function accessibleRoles(
       return { ok: true, roles: Array.from(involved), canComment: true };
     return { ok: false, error: "This TAF has not been routed to you yet." };
   }
+
   if (role === "student") {
     const { data: membership } = await supabase
       .from("student_group_memberships")
@@ -89,13 +115,14 @@ async function accessibleRoles(
       .eq("group_id", sub.group_id)
       .maybeSingle();
     if (membership) {
-
       return { ok: true, roles: Array.from(new Set([...involved, ...route, "adviser"])), canComment: false };
     }
   }
 
   return { ok: false, error: "You are not a participant in this submission." };
 }
+
+
 type ProfileRow = {
   id: string;
   first_name?: string | null;
@@ -110,6 +137,7 @@ function displayName(p: ProfileRow): string {
     .join(" ")
     .trim() || "User";
 }
+
 async function notifyAdviserOfComment(
   submissionId: string,
   authorId: string,
@@ -129,6 +157,7 @@ async function notifyAdviserOfComment(
     const verb = isReply ? "replied to a comment" : "commented";
     const noun = isReply ? "a reply" : "a comment";
     const actorName = authorName || "Someone";
+
     if (submitterId && submitterId !== authorId) {
       await notify(
         submitterId,
@@ -137,6 +166,7 @@ async function notifyAdviserOfComment(
         `${actorName} ${verb} on your submitted TAF.`,
       );
     }
+
     if (groupId) {
       const { data: group } = await supabase
         .from("advisory_groups")
@@ -157,6 +187,9 @@ async function notifyAdviserOfComment(
     console.error("[annotations] Failed to notify:", err);
   }
 }
+
+// ── Get annotations (threads) visible to the user ─────────────────
+
 export async function getSubmissionAnnotations(
   submissionId: string,
 ): Promise<AnnotationsResult> {
@@ -181,8 +214,10 @@ export async function getSubmissionAnnotations(
     console.error("[annotations] Failed to load:", error);
     return { success: false, error: "Failed to load annotations." };
   }
+
+  // Author names
   const authorIds = Array.from(
-    new Set((rows || []).map((r: any) => r.author_id as string)),
+    new Set((rows || []).map((r) => r.author_id as string)),
   );
   const { data: profiles } = authorIds.length
     ? await supabase
@@ -193,7 +228,7 @@ export async function getSubmissionAnnotations(
   const nameMap = new Map<string, ProfileRow>();
   for (const p of (profiles || []) as ProfileRow[]) nameMap.set(p.id, p);
 
-  const full: Annotation[] = (rows || []).map((r: any) => {
+  const full: Annotation[] = (rows || []).map((r) => {
     const author = nameMap.get(r.author_id as string);
     return {
       id: r.id as string,
@@ -211,6 +246,8 @@ export async function getSubmissionAnnotations(
       replies: [],
     };
   });
+
+  // Build threads (roots first, then attach replies)
   const roots: Annotation[] = [];
   const byId = new Map<string, Annotation>();
   for (const a of full) byId.set(a.id, a);
@@ -224,6 +261,9 @@ export async function getSubmissionAnnotations(
 
   return { success: true, data: roots, canComment };
 }
+
+// ── Create a new comment thread ───────────────────────────────────
+
 export async function createSubmissionAnnotation(
   submissionId: string,
   input: {
@@ -246,39 +286,44 @@ export async function createSubmissionAnnotation(
     return { success: false, error: "You can view comments here but not add them." };
 
   const supabase = await createClient();
+
+  // A commenter picks the counterparty thread. Default: adviser.
   let withRole: string = user.role;
   if (user.role === "student") withRole = roles.roles[0] || "adviser";
   if (!["adviser", "associate_dean", "dean", "vcrdes"].includes(withRole))
     withRole = "adviser";
-
+  // Ensure the chosen role is actually accessible
   if (!roles.roles.includes(withRole)) withRole = roles.roles[0] || "adviser";
 
-  const { data, error } = await supabase
-    .from("submission_annotations")
-    .insert({
-      submission_id: submissionId,
-      field_key: input.fieldKey,
-      text_snippet: input.textSnippet,
-      parent_id: null,
-      with_role: withRole,
-      author_id: user.id,
-      author_role: user.role,
-      comment: clean,
-    })
-    .select("id, submission_id, field_key, text_snippet, parent_id, with_role, author_id, author_role, comment, resolved_at, created_at")
-    .single();
+  const [{ data, error }, { data: profile }] = await Promise.all([
+    supabase
+      .from("submission_annotations")
+      .insert({
+        submission_id: submissionId,
+        field_key: input.fieldKey,
+        text_snippet: input.textSnippet,
+        parent_id: null,
+        with_role: withRole,
+        author_id: user.id,
+        author_role: user.role,
+        comment: clean,
+      })
+      .select("id, submission_id, field_key, text_snippet, parent_id, with_role, author_id, author_role, comment, resolved_at, created_at")
+      .single(),
+    supabase
+      .from("profiles")
+      .select("first_name, middle_initial, last_name, suffix")
+      .eq("id", user.id)
+      .maybeSingle(),
+  ]);
 
   if (error || !data) {
     console.error("[annotations] Failed to create:", error);
     return { success: false, error: "Failed to add comment." };
   }
 
-  const { data: profile } = await supabase
-    .from("profiles")
-    .select("first_name, middle_initial, last_name, suffix")
-    .eq("id", user.id)
-    .maybeSingle();
   const authorName = profile ? displayName(profile as ProfileRow) : user.firstName || "User";
+
   void notifyAdviserOfComment(submissionId, user.id, authorName, false);
 
   return {
@@ -300,6 +345,9 @@ export async function createSubmissionAnnotation(
     },
   };
 }
+
+// ── Reply to a thread ─────────────────────────────────────────────
+
 export async function replyToAnnotation(
   submissionId: string,
   threadId: string,
@@ -317,6 +365,8 @@ export async function replyToAnnotation(
     return { success: false, error: "You can view comments here but not reply." };
 
   const supabase = await createClient();
+
+  // Find the thread root to copy its with_role + snippet
   const { data: thread } = await supabase
     .from("submission_annotations")
     .select("id, with_role, field_key, text_snippet")
@@ -353,6 +403,8 @@ export async function replyToAnnotation(
     .eq("id", user.id)
     .maybeSingle();
   const replyAuthorName = profile ? displayName(profile as ProfileRow) : user.firstName || "User";
+
+  // Notify the adviser (skipped for the adviser's own reply).
   void notifyAdviserOfComment(submissionId, user.id, replyAuthorName, true);
 
   return {
@@ -362,7 +414,7 @@ export async function replyToAnnotation(
       submissionId: data.submission_id as string,
       fieldKey: data.field_key as AnnotationFieldKey,
       textSnippet: (data.text_snippet as string) || "",
-      parentId: null,
+      parentId: null, // replies are nested in UI, not returned as roots
       withRole: data.with_role as string,
       authorId: data.author_id as string,
       authorRole: data.author_role as string,
@@ -374,6 +426,9 @@ export async function replyToAnnotation(
     },
   };
 }
+
+// ── Edit an annotation's / reply's comment text ────────────────────
+
 export async function updateAnnotation(
   submissionId: string,
   annotationId: string,
@@ -412,6 +467,8 @@ export async function updateAnnotation(
   }
   return { success: true };
 }
+
+
 export async function deleteAnnotation(
   submissionId: string,
   annotationId: string,
@@ -446,6 +503,9 @@ export async function deleteAnnotation(
   }
   return { success: true };
 }
+
+// ── Resolve a thread (toggle) ─────────────────────────────────────
+
 export async function resolveAnnotation(
   submissionId: string,
   threadId: string,
@@ -466,7 +526,7 @@ export async function resolveAnnotation(
     .single();
 
   if (!thread) return { success: false, error: "Annotation not found." };
-
+  // Only the thread author can resolve/unresolve.
   if (thread.author_id !== user.id) {
     return { success: false, error: "Only the thread author can resolve this." };
   }

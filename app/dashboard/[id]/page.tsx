@@ -11,11 +11,13 @@ export default function DashboardRedirectPage() {
   useEffect(() => {
     async function redirectToRoleDashboard() {
       const user = await getCurrentUser()
-
+      
       if (!user) {
         router.replace('/login')
         return
       }
+
+      // Redirect to role-based dashboard
       router.replace(`/dashboard/${user.role}`)
     }
 

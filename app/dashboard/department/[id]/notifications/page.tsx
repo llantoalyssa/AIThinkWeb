@@ -1,6 +1,8 @@
+
 import { redirect } from "next/navigation";
 import { getCurrentUser } from "@/server/actions/auth";
 import { getMyNotifications } from "@/server/actions/approval-workflow";
+import { getGrantedPermissions } from "@/server/actions/permissions";
 import { rolePath } from "@/lib/constants";
 import DepartmentNotificationsPage from "./notifications-client";
 
@@ -15,9 +17,12 @@ export default async function DepartmentNotificationsRoute() {
     redirect(`${rolePath(user.role)}/${user.id}`);
   }
 
+  const permissions = await getGrantedPermissions(user.id);
+
   return (
     <DepartmentNotificationsPage
       initialUser={user}
+      initialPermissions={permissions}
       initialNotifications={notifs.success ? notifs.data : []}
       initialError={notifs.success ? null : notifs.error}
     />

@@ -5,7 +5,7 @@ import { useRouter, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import { login } from '@/server/actions/auth'
 import { createClient } from '@/server/supabase/client'
-import { ALLOWED_EMAIL_DOMAIN } from '@/lib/constants'
+import { ALLOWED_EMAIL_DOMAIN, roleLandingPath } from '@/lib/constants'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -24,6 +24,7 @@ export default function LoginForm() {
   const searchParams = useSearchParams()
   const disabledParam = searchParams.get('disabled')
   const domainParam = searchParams.get('domain')
+  const profileParam = searchParams.get('profile')
 
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -35,12 +36,16 @@ export default function LoginForm() {
       ? 'Your account has been disabled. Please contact the department administrator.'
       : domainParam === '1'
         ? `Only ${ALLOWED_EMAIL_DOMAIN} Google accounts are allowed to sign in.`
-        : null
+        : profileParam === '1'
+          ? 'We could not finish setting up your account. Please try signing in again — if it keeps happening, contact the department administrator.'
+          : null
   )
   const [fieldErrors, setFieldErrors] = useState<{
     email?: string
     password?: string
   }>({})
+
+  // ── Forgot password ─────────────────────────────────────────────
   const [forgotOpen, setForgotOpen] = useState(false)
   const [forgotEmail, setForgotEmail] = useState('')
   const [forgotSending, setForgotSending] = useState(false)
@@ -109,7 +114,9 @@ export default function LoginForm() {
         setError(result.error)
         return
       }
-      router.push(`/dashboard/${result.role}/${result.userId}`)
+
+      // Redirect based on user role with user ID
+      router.push(roleLandingPath(result.role, result.userId))
     } catch {
       setError(
         'A network error occurred. Please check your connection and try again.',
@@ -257,16 +264,16 @@ export default function LoginForm() {
         </Button>
       </form>
 
-      <div className="relative my-6">
+      {/* <div className="relative my-6">
         <div className="absolute inset-0 flex items-center">
           <Separator className="bg-gray-200" />
         </div>
         <div className="relative flex justify-center text-xs uppercase">
           <span className="bg-white px-2 text-gray-400">Or continue with</span>
         </div>
-      </div>
+      </div> */}
 
-      <Button
+      {/* <Button
         variant="outline"
         type="button"
         className="w-full"
@@ -296,8 +303,9 @@ export default function LoginForm() {
           </svg>
         )}
         Continue with Google
-      </Button>
+      </Button> */}
 
+      {/* "Don't have an account? Create Account" — hidden
       <p className="mt-6 text-center text-sm text-gray-500">
         Don&apos;t have an account?{' '}
         <Link
@@ -307,7 +315,11 @@ export default function LoginForm() {
           Create Account
         </Link>
       </p>
+      */}
 
+      {/* Slightly wider than the max-w-sm form column so the whole sentence
+          ("… Terms & Conditions and Privacy Policy") fits on ONE line. It
+          still wraps gracefully on narrow screens. */}
       <p className="mt-3 text-center text-xs text-gray-400 sm:-mx-8">
         By signing in you agree to our{' '}
         <Link

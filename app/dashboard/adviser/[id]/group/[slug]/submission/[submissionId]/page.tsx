@@ -1,10 +1,13 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { useRouter, useParams } from 'next/navigation'
+import { useRouter, useParams, useSearchParams } from 'next/navigation'
 import { type CurrentUser } from '@/server/actions/auth'
 import { getAdviserSubmissionData } from '@/server/actions/adviser-shell'
 import { UserMenu } from '@/components/user-menu'
+import SidebarCollapseHandle from "@/components/sidebar-collapse-handle";
+import { navItemsFor } from "@/components/nav-items";
+import { getMyGrantedPermissions } from "@/server/actions/permissions";
 import {
   getSubmissionById,
   type SubmissionWithAnalysis,
@@ -12,10 +15,7 @@ import {
 import ApprovalActions from '@/components/approval-actions'
 import SubmissionReviewContent from '@/components/submission-review-content'
 import AdviserApprovalBell from '@/components/adviser-approval-bell'
-import { getMyNotifications } from '@/server/actions/approval-workflow'
 import {
-  BarChart3,
-  Bell,
   Loader2,
   ChevronLeft,
   ChevronRight,
@@ -24,62 +24,54 @@ import {
   AlertCircle,
 } from 'lucide-react'
 
-type NavItem = {
-  icon: React.ReactNode;
-  label: string;
-  href?: string;
-  active?: boolean;
-};
+
 
 export default function AdviserSubmissionViewPage() {
   const router = useRouter();
   const params = useParams<{ id: string; slug: string; submissionId: string }>();
   const userId = params.id;
+  const searchParams = useSearchParams();
   const groupSlug = params.slug;
   const submissionId = params.submissionId;
 
-  const navItems: NavItem[] = [
-    { icon: <BarChart3 className="h-5 w-5" />, label: "Dashboard", href: `/dashboard/adviser/${userId}` },
-    { icon: <Bell className="h-5 w-5" />, label: "Notifications", href: `/dashboard/adviser/${userId}/notifications` },
-  ];
+  // THE shared source, permission-filtered — the same list the dashboard, the
+  // Pending TAFs page and every other adviser surface renders. The hand-rolled
+  // two-item version that used to live here is why a granted page (Research
+  // Analytics, Approved TAF, Journals) vanished the moment you opened a TAF
+  // from the Pending list.
+  const [permissions, setPermissions] = useState<string[] | undefined>(undefined);
+  const navItems = navItemsFor({ role: "adviser", userId, permissions });
 
   const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
   const [loading, setLoading] = useState(true);
   const [sidebarExpanded, setSidebarExpanded] = useState(true);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const [unreadCount, setUnreadCount] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
-    async function refreshUnread() {
-      const res = await getMyNotifications();
-      if (!cancelled && res.success) {
-        setUnreadCount(res.data.filter((n) => !n.readAt).length);
-      }
-    }
-    function onRead() { void refreshUnread(); }
-    function onFocus() { void refreshUnread(); }
-    window.addEventListener('aithink-notifications-read', onRead);
-    window.addEventListener('focus', onFocus);
+    getMyGrantedPermissions().then((keys) => {
+      if (!cancelled) setPermissions(keys);
+    });
     return () => {
       cancelled = true;
-      window.removeEventListener('aithink-notifications-read', onRead);
-      window.removeEventListener('focus', onFocus);
     };
-  }, [userId]);
+  }, []);
 
   const [submission, setSubmission] = useState<SubmissionWithAnalysis | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     async function init() {
+      // ONE round trip. This used to be getCurrentUser() → getSubmissionById()
+      // (two sequential waits) plus a separate unread-count call — three queued
+      // browser round trips. The bundle resolves all three in parallel
+      // server-side.
       const data = await getAdviserSubmissionData(submissionId);
       if (!data.success) { router.replace('/login'); return; }
       const userResult = data.user;
       if (userResult.role !== 'adviser') { router.replace(`/dashboard/${userResult.role}/${userResult.id}`); return; }
       if (userId !== userResult.id) { router.replace(`/dashboard/adviser/${userResult.id}/group/${groupSlug}/submission/${submissionId}`); return; }
       setCurrentUser(userResult);
-      setUnreadCount(data.unreadCount);
       if (data.submission) setSubmission(data.submission);
       else setError(data.submissionError);
       setLoading(false);
@@ -91,6 +83,9 @@ export default function AdviserSubmissionViewPage() {
     const result = await getSubmissionById(submissionId);
     if (result.success) setSubmission(result.data);
   }
+
+  // Light polling: pick up the student's Saved edits on a returned /
+  // in-flight submission so the adviser sees them without a manual refresh.
   useEffect(() => {
     const id = setInterval(() => {
       void reloadSubmission();
@@ -104,7 +99,19 @@ export default function AdviserSubmissionViewPage() {
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
-  function goBack() { router.push(`/dashboard/adviser/${userId}/group/${groupSlug}`); }
+  // Rows on the adviser's Approved TAF page carry ?from=approved-page; Back must
+  // return there rather than to the group (the list the reader actually came from).
+  const fromApprovedPage = searchParams.get("from") === "approved-page";
+  const backLabel = fromApprovedPage
+    ? "Back to Approved TAFs"
+    : `Back to ${submission?.groupName || groupSlug}`;
+  function goBack() {
+    router.push(
+      fromApprovedPage
+        ? `/dashboard/adviser/${userId}/approved`
+        : `/dashboard/adviser/${userId}/group/${groupSlug}`,
+    );
+  }
 
   if (loading) {
     return <div className="flex min-h-screen items-center justify-center"><Loader2 className="h-8 w-8 animate-spin text-[#8B1A1A]" /></div>;
@@ -115,7 +122,7 @@ export default function AdviserSubmissionViewPage() {
       <div className="flex min-h-screen items-center justify-center">
         <div className="text-center">
           <AlertCircle className="h-10 w-10 text-red-500 mx-auto mb-3" />
-          <p className="text-sm text-red-600">{error || 'Submission not found.'}</p>
+          <p className="text-sm text-red-600">{error || 'TAF has been routed.'}</p>
           <button onClick={goBack} className="mt-4 text-sm text-[#8B1A1A] hover:underline cursor-pointer">Back to group</button>
         </div>
       </div>
@@ -129,13 +136,9 @@ export default function AdviserSubmissionViewPage() {
           className="md:hidden flex h-9 w-9 items-center justify-center rounded-lg text-gray-500 hover:bg-gray-100">
           {mobileMenuOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
         </button>
-        <button onClick={() => setSidebarExpanded(!sidebarExpanded)}
-          className="hidden md:flex h-9 w-9 items-center justify-center rounded-lg text-gray-400 hover:bg-gray-100 hover:text-gray-600"
-          title={sidebarExpanded ? 'Collapse sidebar' : 'Expand sidebar'}>
-          {sidebarExpanded ? <ChevronLeft className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
-        </button>
+       
         <h1 className="text-lg font-semibold text-[#333] flex-1">AIThink</h1>
-        {}
+        {/* Notifications bell (shared, in sync with the dashboard) */}
         <AdviserApprovalBell
           adviserId={userId}
           routerPush={(href) => router.push(href)}
@@ -145,47 +148,45 @@ export default function AdviserSubmissionViewPage() {
       </header>
 
       <div className="flex flex-1 relative">
-        <aside className={`hidden md:flex flex-col border-r bg-white transition-all duration-200 self-start sticky top-14 h-[calc(100vh-3.5rem)] overflow-y-auto ${sidebarExpanded ? 'w-48' : 'w-16'} shrink-0`}>
+        <div className="group/sidebar relative hidden shrink-0 self-start sticky top-14 h-[calc(100vh-3.5rem)] md:block">
+        <aside className={`flex h-full flex-col border-r bg-white transition-all duration-200 overflow-y-auto ${sidebarExpanded ? 'w-64' : 'w-16'} shrink-0`}>
           <nav className="flex flex-col gap-1 p-2 pt-4">
-            {navItems.map((item) => {
-              const isNotif = item.label === 'Notifications';
-              const count = isNotif ? unreadCount : 0;
-              return (
-                <button key={item.label} onClick={() => item.href && router.push(item.href)}
-                  className={`flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm transition-colors ${item.active ? 'bg-[#8B1A1A]/10 text-[#8B1A1A] font-medium' : 'text-gray-500 hover:bg-gray-100 hover:text-gray-700'} ${sidebarExpanded ? '' : 'justify-center'} ${!item.href ? 'cursor-default opacity-60' : 'cursor-pointer'}`}
-                  title={item.label} disabled={!item.href}>
-                  <span className="relative">
-                    {item.icon}
-                    {isNotif && count > 0 && (
-                      <span className="absolute -top-1.5 -right-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-red-500 text-[9px] font-bold text-white">
-                        {count > 9 ? '9+' : count}
-                      </span>
-                    )}
-                  </span>
-                  {sidebarExpanded && <span>{item.label}</span>}
-                </button>
-              );
-            })}
+            {navItems.map((item) => (
+              <button
+                key={item.id}
+                onClick={() => item.href && router.push(item.href)}
+                className={`flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-700 ${sidebarExpanded ? '' : 'justify-center'} ${!item.href ? 'cursor-default opacity-60' : 'cursor-pointer'}`}
+                title={item.label}
+                disabled={!item.href}
+              >
+                {item.icon}
+                {sidebarExpanded && <span className="truncate">{item.label}</span>}
+              </button>
+            ))}
           </nav>
         </aside>
+          <SidebarCollapseHandle
+            expanded={sidebarExpanded}
+            onToggle={() => setSidebarExpanded((v) => !v)}
+          />
+        </div>
 
         {mobileMenuOpen && (
           <div className="fixed inset-0 z-20 md:hidden">
             <div className="absolute inset-0 bg-black/30" onClick={() => setMobileMenuOpen(false)} />
-            <aside className="absolute left-0 top-0 bottom-0 w-56 overflow-y-auto bg-white shadow-xl">
+            <aside className="absolute left-0 top-14 bottom-0 z-40 w-64 overflow-y-auto bg-white shadow-xl">
               <nav className="flex flex-col gap-1 p-3 pt-6">
                 {navItems.map((item) => (
-                  <button key={item.label} onClick={() => { if (item.href) router.push(item.href); setMobileMenuOpen(false); }}
-                    className={`flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm transition-colors ${item.active ? 'bg-[#8B1A1A]/10 text-[#8B1A1A] font-medium' : 'text-gray-500 hover:bg-gray-100 hover:text-gray-700'} ${!item.href ? 'cursor-default opacity-60' : 'cursor-pointer'}`}
-                    disabled={!item.href}>
-                    <span className="relative">
-                      {item.icon}
-                      {item.label === 'Notifications' && unreadCount > 0 && (
-                        <span className="absolute -top-1.5 -right-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-red-500 text-[9px] font-bold text-white">
-                          {unreadCount > 9 ? '9+' : unreadCount}
-                        </span>
-                      )}
-                    </span>
+                  <button
+                    key={item.id}
+                    onClick={() => {
+                      if (item.href) router.push(item.href);
+                      setMobileMenuOpen(false);
+                    }}
+                    className={`flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-700 ${!item.href ? 'cursor-default opacity-60' : 'cursor-pointer'}`}
+                    disabled={!item.href}
+                  >
+                    {item.icon}
                     <span>{item.label}</span>
                   </button>
                 ))}
@@ -196,10 +197,10 @@ export default function AdviserSubmissionViewPage() {
 
         <main className="flex-1 overflow-auto">
           <div className="mx-auto max-w-6xl px-4 py-4 sm:px-6 lg:px-8">
-            {}
+            {/* ── Shared review content (uniform across roles) ── */}
             <SubmissionReviewContent
               submission={submission}
-              backLabel={`Back to ${submission.groupName || groupSlug}`}
+              backLabel={backLabel}
               onBack={goBack}
               actions={
                 submission.currentApproverRole === "adviser" ? (
@@ -214,14 +215,6 @@ export default function AdviserSubmissionViewPage() {
         </main>
       </div>
 
-      <nav className="md:hidden flex items-center justify-around border-t bg-white px-2 py-1 safe-area-bottom">
-        {navItems.map((item) => (
-          <button key={item.label}
-            className={`flex flex-col items-center gap-0.5 px-3 py-2 rounded-lg text-xs transition-colors ${item.active ? 'text-[#8B1A1A]' : 'text-gray-400 hover:text-gray-600'}`}>
-            {item.icon}<span className="text-[10px]">{item.label}</span>
-          </button>
-        ))}
-      </nav>
 
       <footer className="hidden md:block bg-[#8B1A1A] text-white text-center text-xs py-3">
         <p>&copy; {new Date().getFullYear()} AIThink. All rights reserved.</p>

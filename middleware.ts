@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { updateSession } from "@/server/supabase/middleware";
-import { ROLE_DASHBOARD_ROUTES, type UserRole } from "@/lib/constants";
+import { ROLE_DASHBOARD_ROUTES, roleLandingPath, type UserRole } from "@/lib/constants";
 
 // Define route patterns for each role (with or without user ID)
 const ROUTE_PATTERNS = {
@@ -136,9 +136,8 @@ export async function middleware(request: NextRequest) {
         .single();
       if (profile?.role) userRole = profile.role as UserRole;
     }
-    const dashboardRoute = ROLE_DASHBOARD_ROUTES[userRole || "student"];
     const url = request.nextUrl.clone();
-    url.pathname = `${dashboardRoute}/${userId}`;
+    url.pathname = roleLandingPath(userRole || "student", userId);
     return redirectWithCookies(url, supabaseResponse);
   }
 
@@ -170,9 +169,8 @@ export async function middleware(request: NextRequest) {
     });
 
     if (!hasAccess) {
-      const correctDashboard = ROLE_DASHBOARD_ROUTES[role];
       const url = request.nextUrl.clone();
-      url.pathname = `${correctDashboard}/${userId}`;
+      url.pathname = roleLandingPath(role, userId);
       return redirectWithCookies(url, supabaseResponse);
     }
 
@@ -180,7 +178,7 @@ export async function middleware(request: NextRequest) {
     const baseRoute = ROLE_DASHBOARD_ROUTES[role];
     if (pathname === baseRoute) {
       const url = request.nextUrl.clone();
-      url.pathname = `${baseRoute}/${userId}`;
+      url.pathname = roleLandingPath(role, userId);
       return redirectWithCookies(url, supabaseResponse);
     }
 

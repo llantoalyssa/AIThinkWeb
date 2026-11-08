@@ -277,7 +277,7 @@ function PhraseChipGroup({
             <button
               type="button"
               onClick={() => onCopy(p)}
-              className="shrink-0 p-0.5 rounded hover:bg-black/5 cursor-pointer"
+              className="shrink-0 rounded p-1.5 hover:bg-black/5 cursor-pointer"
               title="Copy phrase"
               aria-label="Copy phrase"
             >
@@ -286,7 +286,7 @@ function PhraseChipGroup({
             <button
               type="button"
               onClick={() => onFindInPdf(p)}
-              className="shrink-0 p-0.5 rounded hover:bg-black/5 cursor-pointer"
+              className="shrink-0 rounded p-1.5 hover:bg-black/5 cursor-pointer"
               title="Find in PDF (copy + tip)"
               aria-label="Find in PDF"
             >

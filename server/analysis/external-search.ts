@@ -1,9 +1,14 @@
+// ============================================================
+// Google Scholar search via SerpAPI
+// Returns structured paper results for external similarity
+// ============================================================
+
 export type ScholarResult = {
   title: string;
   authors: string;
-  publication: string;
+  publication: string;  // e.g. "IEEE Conference on Computer Vision, 2024"
   year: number | null;
-  summary: string;
+  summary: string;      // snippet / abstract
   link: string;
 };
 
@@ -15,6 +20,12 @@ export type ExternalSearchResult = {
   error: string;
   results?: never;
 };
+
+/**
+ * Search Google Scholar for papers matching the given query.
+ * Requires SERPAPI_API_KEY env variable.
+ * Free tier: 100 searches/month.
+ */
 export async function searchGoogleScholar(
   query: string,
   numResults: number = 10,
@@ -30,18 +41,19 @@ export async function searchGoogleScholar(
   }
 
   try {
-
+    // Dynamic import so it doesn't fail at module level when key is missing
     const { getJson } = await import("serpapi");
 
     const response = await getJson({
       api_key: apiKey,
       engine: "google_scholar",
-      q: query.slice(0, 500),
+      q: query.slice(0, 500),   // keep query reasonable
       num: Math.min(numResults, 20),
       hl: "en",
     });
 
     const raw = response as Record<string, unknown>;
+
     if (raw.error) {
       const errMsg = String(raw.error);
       const isNoResults =
@@ -72,6 +84,8 @@ export async function searchGoogleScholar(
         const pubInfo = item.publication_info as Record<string, unknown> | undefined;
         const authorsArr = (pubInfo?.authors as Array<Record<string, string>>) || [];
         const summary = (pubInfo?.summary as string) || "";
+
+        // Extract year from summary e.g. "IEEE Conf, 2023" or "Journal of AI, 2024"
         const yearMatch = summary.match(/\b(20\d{2})\b/);
         const year = yearMatch ? parseInt(yearMatch[1]) : null;
 
@@ -86,7 +100,7 @@ export async function searchGoogleScholar(
           link: (item.link as string) || "",
         };
       })
-      .filter((r: ScholarResult) => r.title);
+      .filter((r: ScholarResult) => r.title); // remove empty titles
 
     return { success: true, results };
   } catch (err) {

@@ -173,7 +173,7 @@ export default function DiscoverPage() {
                   </div>
                 )}
 
-                <p className="mt-3 text-sm leading-relaxed text-gray-600 line-clamp-3">
+                <p className="mt-3 text-justify text-sm leading-relaxed text-gray-600 line-clamp-3">
                   {t.researchGap || "No research gap analysis available."}
                 </p>
 
@@ -317,7 +317,7 @@ export default function DiscoverPage() {
                   <p className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-gray-400">
                     <Lightbulb className="h-3.5 w-3.5" /> Research Gap Analysis
                   </p>
-                  <p className="whitespace-pre-line text-sm leading-relaxed text-gray-700">
+                  <p className="whitespace-pre-line text-justify text-sm leading-relaxed text-gray-700">
                     {selected.researchGap ||
                       "No research gap analysis available for this topic."}
                   </p>

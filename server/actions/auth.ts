@@ -1,9 +1,12 @@
 "use server";
 
+import { cache } from "react";
 import { createClient } from "@/server/supabase/server";
 import { cookies } from "next/headers";
 import { logAudit } from "@/server/audit";
 import { ALLOWED_EMAIL_DOMAIN, type UserRole, ROLE_DASHBOARD_ROUTES } from "@/lib/constants";
+
+
 const NAME_RE = /^[\p{L} .'-]+$/u;
 const SUFFIX_RE = /^[\p{L} .,'-]+$/u;
 
@@ -64,6 +67,8 @@ export async function login(input: LoginInput): Promise<LoginResult> {
     }
     return { success: false, error: error.message };
   }
+
+  // Fetch user role from profile
   const { data: profile, error: profileError } = await supabase
     .from("profiles")
     .select("role, is_active")
@@ -73,6 +78,8 @@ export async function login(input: LoginInput): Promise<LoginResult> {
   if (profileError) {
     console.error("Error fetching user role:", profileError);
   }
+
+  // Block disabled accounts from signing in
   if (profile && profile.is_active === false) {
     await supabase.auth.signOut();
     return {
@@ -85,6 +92,7 @@ export async function login(input: LoginInput): Promise<LoginResult> {
   const role = (profile?.role as UserRole) || "student";
 
   console.log(`User ${data.user.id} logged in with role: ${role}`);
+
   const meta = (data.user.user_metadata ?? {}) as {
     first_name?: string;
     last_name?: string;
@@ -113,6 +121,8 @@ export async function register(input: RegisterInput): Promise<RegisterResult> {
   const email = input.email.toLowerCase().trim();
   const password = input.password;
   const role = input.role || "student";
+
+  // ── Server-side validation ──────────────────────────────────
   if (!firstName || firstName.length < 2) {
     return { success: false, error: "First name must be at least 2 characters." };
   }
@@ -157,7 +167,7 @@ export async function register(input: RegisterInput): Promise<RegisterResult> {
       error: `Only ${ALLOWED_EMAIL_DOMAIN} email addresses are allowed for registration.`,
     };
   }
-
+  // The email's local part must BE the SR code (e.g. 23-93627@g.batstate-u.edu.ph).
   if (email.split("@")[0].toLowerCase() !== srCode.toLowerCase()) {
     return {
       success: false,
@@ -167,6 +177,8 @@ export async function register(input: RegisterInput): Promise<RegisterResult> {
   if (!password || password.length < 8) {
     return { success: false, error: "Password must be at least 8 characters." };
   }
+
+  // ── Create account via Supabase ─────────────────────────────
   const supabase = await createClient();
 
   const { data, error } = await supabase.auth.signUp({
@@ -199,13 +211,18 @@ export async function register(input: RegisterInput): Promise<RegisterResult> {
     }
     return { success: false, error: error.message };
   }
+
   if (data?.user?.identities?.length === 0) {
     return {
       success: false,
       error: "This email address is already in use. Please sign in instead.",
     };
   }
+
+
   await supabase.auth.signOut();
+
+
   await logAudit({
     action: "account_registered",
     actor: {
@@ -223,6 +240,8 @@ export async function register(input: RegisterInput): Promise<RegisterResult> {
 
   return { success: true };
 }
+
+
 export type CurrentUser = {
   id: string;
   email: string;
@@ -237,7 +256,7 @@ export type CurrentUser = {
   signatureUrl: string | null;
 };
 
-export async function getCurrentUser(): Promise<CurrentUser | null> {
+const loadCurrentUser = cache(async (): Promise<CurrentUser | null> => {
   const supabase = await createClient();
 
   const {
@@ -257,10 +276,12 @@ export async function getCurrentUser(): Promise<CurrentUser | null> {
         "| SB cookies:", names.filter((n) => n.startsWith("sb-")).join(",") || "none",
       );
     } catch {
-
+      // cookies() is unavailable outside a request scope — logging is optional.
     }
     return null;
   }
+
+  // Fetch profile from public.profiles, fall back to auth user_metadata
   const { data: profile } = await supabase
     .from("profiles")
     .select("*")
@@ -282,14 +303,25 @@ export async function getCurrentUser(): Promise<CurrentUser | null> {
     avatarUrl: profile?.avatar_url || null,
     signatureUrl: profile?.signature_url || null,
   };
+});
+
+export async function getCurrentUser(): Promise<CurrentUser | null> {
+  return loadCurrentUser();
 }
+
+// ── Get dashboard route for role ───────────────────────────────
+
 export async function getDashboardRouteForRole(role: UserRole): Promise<string> {
   return ROLE_DASHBOARD_ROUTES[role] || "/dashboard";
 }
+
+// ── Logout ──────────────────────────────────────────────────────
+
 export type LogoutResult = { success: true } | { success: false; error: string };
 
 export async function logout(): Promise<LogoutResult> {
   const supabase = await createClient();
+
   await logAudit({ action: "logout", description: "Signed out." });
 
   const { error } = await supabase.auth.signOut();
@@ -301,7 +333,12 @@ export async function logout(): Promise<LogoutResult> {
 
   return { success: true };
 }
+
+// ── Update profile avatar URL ────────────────────────────────────
+
 export type UpdateAvatarResult = { success: true } | { success: false; error: string };
+
+
 export type UpdateProfileResult = { success: true } | { success: false; error: string };
 
 export async function updateProfile(input: {
@@ -309,7 +346,6 @@ export async function updateProfile(input: {
   lastName?: string;
   middleInitial?: string;
   suffix?: string;
-
   srCode?: string;
 }): Promise<UpdateProfileResult> {
   const user = await getCurrentUser();
@@ -368,6 +404,7 @@ export async function updateProfile(input: {
   }
 
   const supabase = await createClient();
+
   const { data, error } = await supabase.rpc("update_own_profile_fields", {
     p_first_name: updates.first_name ?? null,
     p_last_name: updates.last_name ?? null,
@@ -391,7 +428,6 @@ export async function updateProfileAvatar(avatarUrl: string): Promise<UpdateAvat
   if (!user) return { success: false, error: "You must be logged in." };
 
   const supabase = await createClient();
-
   const { data, error } = await supabase.rpc("update_own_avatar_url", {
     p_avatar_url: avatarUrl,
   });
@@ -405,6 +441,8 @@ export async function updateProfileAvatar(avatarUrl: string): Promise<UpdateAvat
   }
   return { success: true };
 }
+
+
 export async function updateSignature(signatureUrl: string): Promise<UpdateAvatarResult> {
   const user = await getCurrentUser();
   if (!user) return { success: false, error: "You must be logged in." };
@@ -423,6 +461,9 @@ export async function updateSignature(signatureUrl: string): Promise<UpdateAvata
   }
   return { success: true };
 }
+
+// ── Change password ──────────────────────────────────────────────
+
 export type ChangePasswordResult = { success: true } | { success: false; error: string };
 
 export async function changePassword(input: {
@@ -446,8 +487,30 @@ export async function changePassword(input: {
   }
 
   const supabase = await createClient();
+
+ 
+  const { data: authNow } = await supabase.auth.getUser();
+  const providers = (authNow.user?.app_metadata?.providers as string[] | undefined) ?? [];
+  const signInEmail = user.email || authNow.user?.email || "";
+
+  if (!providers.includes("email")) {
+    return {
+      success: false,
+      error:
+        "This account signs in with Google, so it has no password to change here. Manage it from your Google account, or ask the department to set a password.",
+    };
+  }
+  if (!signInEmail) {
+    return {
+      success: false,
+      error:
+        "This account has no email on file, so the current password cannot be verified. Ask the department to correct your account email.",
+    };
+  }
+
+  // 1. Verify the current password (re-authenticate with the auth email).
   const { error: signInErr } = await supabase.auth.signInWithPassword({
-    email: user.email,
+    email: signInEmail,
     password: currentPassword,
   });
   if (signInErr) {
@@ -456,17 +519,40 @@ export async function changePassword(input: {
     }
     return { success: false, error: signInErr.message };
   }
+
+  // 2. Set the new password.
+ 
   const { error: updateErr } = await supabase.auth.updateUser({
     password: newPassword,
-  });
+    current_password: currentPassword,
+  } as unknown as { password: string });
 
   if (updateErr) {
     console.error("[auth] Failed to change password:", updateErr);
-    return { success: false, error: "Failed to change password. Please try again." };
+
+    const detail = updateErr.message?.trim();
+    return {
+      success: false,
+      error: detail
+        ? `Failed to change password: ${detail}`
+        : "Failed to change password. Please try again.",
+    };
   }
+
+  await logAudit({
+    action: "password_reset",
+    category: "auth",
+    entityType: "user",
+    entityId: user.id,
+    entityLabel: `${user.firstName} ${user.lastName}`.trim(),
+    description: "Changed their own account password.",
+    actor: { id: user.id, email: user.email, role: user.role },
+  });
 
   return { success: true };
 }
+
+// ── Set a new password (password-reset flow) ───────────────────────
 export async function updatePassword(
   password: string
 ): Promise<{ success: true } | { success: false; error: string }> {

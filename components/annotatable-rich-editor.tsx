@@ -48,7 +48,10 @@ export default function AnnotatableRichEditor({
 
       const target = looseMatch || blocks[0];
       if (!target) return;
-      if (!looseMatch && want.length > 0) {
+      const fieldText = normalized(editorDom);
+      const anchorStillPresent =
+        want.length > 0 && (fieldText.includes(want) || want.includes(fieldText));
+      if (!looseMatch && want.length > 0 && !anchorStillPresent) {
         window.dispatchEvent(
           new CustomEvent("annotation-jump-miss", {
             detail: { fieldKey, snippet },

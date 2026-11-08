@@ -2,6 +2,7 @@
 
 import { createClient } from "@/server/supabase/server";
 import { getCurrentUser } from "@/server/actions/auth";
+import { getMyGrantedPermissions } from "@/server/actions/permissions";
 
 export type CostLogEntry = {
   id: string;
@@ -32,6 +33,15 @@ export async function getCostLogs(
   const user = await getCurrentUser();
   if (!user) {
     return { success: false, error: "You must be logged in." };
+  }
+
+  const granted = await getMyGrantedPermissions();
+  if (!granted.includes("pages.cost_logs")) {
+    return {
+      success: false,
+      error:
+        "This account has not been granted the Cost Logs page. Ask a department account to grant it.",
+    };
   }
 
   const supabase = await createClient();

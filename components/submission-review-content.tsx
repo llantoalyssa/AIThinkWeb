@@ -9,13 +9,16 @@ import AspectScoreBreakdown from "@/components/aspect-score-breakdown";
 import AnnotationLayer from "@/components/annotation-layer";
 import AnnotatedSection from "@/components/annotated-section";
 import AnnotatableRichEditor from "@/components/annotatable-rich-editor";
-import ExportTafPdf from "@/components/export-taf-pdf";
+import ExportTafForm from "@/components/export-taf-form";
 import { useAnnotations } from "@/components/annotation-layer";
 import {
   updateSubmittedTafContent,
   resubmitTAF,
 } from "@/server/actions/approval-workflow";
-import type { AnnotationFieldKey } from "@/server/actions/submission-annotations";
+import type {
+  Annotation,
+  AnnotationFieldKey,
+} from "@/server/actions/submission-annotations";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -61,6 +64,11 @@ type Props = {
   onBack: () => void;
   editable?: boolean;
   trackerClickable?: boolean;
+  initialAnnotations?: Annotation[] | null;
+
+  initialCanComment?: boolean;
+  allowComments?: boolean;
+  hideExport?: boolean;
 };
 
 function ToggleCommentMode() {
@@ -132,6 +140,10 @@ export default function SubmissionReviewContent({
   onBack,
   editable = false,
   trackerClickable = true,
+  initialAnnotations,
+  initialCanComment,
+  allowComments = true,
+  hideExport = false,
 }: Props) {
   const [scoreModalOpen, setScoreModalOpen] = useState(false);
   const [draft, setDraft] = useState<Record<string, string>>({
@@ -225,7 +237,12 @@ export default function SubmissionReviewContent({
   return (
     <AnnotationLayer
       submissionId={submission.id}
-      enableCommentMode={!editable}
+      enableCommentMode={
+        !editable && allowComments && !submission.groupArchived
+      }
+      showCommentsPanel={allowComments && !submission.groupArchived}
+      initialAnnotations={initialAnnotations}
+      initialCanComment={initialCanComment}
     >
     <>
       {}
@@ -237,12 +254,15 @@ export default function SubmissionReviewContent({
       </div>
 
       {}
-      <div className="flex items-center gap-3 mb-6">
-        <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-[#8B1A1A]/10 shrink-0">
-          <FileText className="h-6 w-6 text-[#8B1A1A]" />
+      {
+
+}
+      <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:gap-3">
+        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#8B1A1A]/10 sm:h-12 sm:w-12">
+          <FileText className="h-5 w-5 text-[#8B1A1A] sm:h-6 sm:w-6" />
         </div>
-        <div className="flex-1 min-w-0">
-          <h1 className="text-xl sm:text-2xl font-bold text-[#333]">
+        <div className="min-w-0 flex-1">
+          <h1 className="text-lg font-bold leading-snug break-words text-[#333] sm:text-2xl">
             {snapshot?.proposedTitle || "Untitled"}
           </h1>
           <p className="text-xs text-gray-500 mt-0.5">
@@ -270,13 +290,17 @@ export default function SubmissionReviewContent({
             </p>
           )}
         </div>
-        {actions && <div className="shrink-0">{actions}</div>}
+        {actions && (
+          <div className="w-full shrink-0 [&_button]:w-full sm:w-auto sm:[&_button]:w-auto">
+            {actions}
+          </div>
+        )}
       </div>
 
       {}
-      {submission.status === "approved" && (
+      {submission.status === "approved" && !hideExport && (
         <div className="mb-6 flex justify-end">
-          <ExportTafPdf submission={submission} />
+          <ExportTafForm submission={submission} />
         </div>
       )}
 
@@ -355,7 +379,7 @@ export default function SubmissionReviewContent({
                   View More <ChevronRight className="h-4 w-4" />
                 </button>
               </DialogTrigger>
-              <DialogContent className="sm:max-w-2xl max-h-[85vh] overflow-y-auto">
+              <DialogContent fullOnMobile className="sm:max-w-6xl">
                 <DialogHeader>
                   <DialogTitle className="flex items-center gap-2 text-base">
                     <BarChart3 className="h-4 w-4 text-[#8B1A1A]" /> Detailed
@@ -363,15 +387,15 @@ export default function SubmissionReviewContent({
                   </DialogTitle>
                 </DialogHeader>
                 <div className="space-y-4">
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                    <div className="text-center p-3 rounded-lg bg-gray-50">
-                      <div className="text-2xl font-bold text-[#333]">
+                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 sm:gap-3">
+                    <div className="rounded-lg bg-gray-50 p-2.5 text-center sm:p-3">
+                      <div className="text-xl font-bold text-[#333] sm:text-2xl">
                         {submission.combinedScore.toFixed(1)}%
                       </div>
                       <div className="text-xs text-gray-500 mt-0.5">Combined</div>
                     </div>
                     <div className="text-center p-3 rounded-lg bg-blue-50">
-                      <div className="text-xl font-bold text-blue-700">
+                      <div className="text-lg font-bold text-blue-700 sm:text-xl">
                         {submission.internalSimilarity.toFixed(2)}%
                       </div>
                       <div className="text-xs text-blue-600 mt-0.5">
@@ -379,7 +403,7 @@ export default function SubmissionReviewContent({
                       </div>
                     </div>
                     <div className="text-center p-3 rounded-lg bg-purple-50">
-                      <div className="text-xl font-bold text-purple-700">
+                      <div className="text-lg font-bold text-purple-700 sm:text-xl">
                         {submission.externalSimilarity.toFixed(2)}%
                       </div>
                       <div className="text-xs text-purple-600 mt-0.5">
@@ -406,10 +430,15 @@ export default function SubmissionReviewContent({
                       </span>
                     </div>
                   </div>
-                  {}
                   {submission.scoringBreakdown && (
                     <ScoringBreakdownCard
                       breakdown={submission.scoringBreakdown}
+                      overallJudgment={
+                        submission.judgment as
+                          | "high_similarity"
+                          | "low_similarity"
+                          | undefined
+                      }
                     />
                   )}
 
@@ -418,13 +447,15 @@ export default function SubmissionReviewContent({
                       Scoring Formula
                     </p>
                     <p className="text-sm text-[#444]">
-                      Combined = (Internal × {INTERNAL_WEIGHT.toFixed(2)}) +
-                      (External × {EXTERNAL_WEIGHT.toFixed(2)})
+                      Combined = (internal aggregate ×{" "}
+                      {INTERNAL_WEIGHT.toFixed(2)}) + (external aggregate ×{" "}
+                      {EXTERNAL_WEIGHT.toFixed(2)})
                     </p>
                     <p className="text-xs text-gray-400 mt-1">
-                      Stage 1 retrieves Top 5; Stage 2 re-scores by research
-                      aspects (objectives, subject, method). Raw cosine ≠
-                      calibrated topical relatedness.
+                      Stage 1 retrieves Top 5 by whole-document similarity; Stage
+                      2 re-scores each match by objectives, subject, method, and
+                      overall aspects, then rank-weights Top1 40% / Top2 25% /
+                      Top3 15% / Top4 12% / Top5 8%.
                     </p>
                     <p className="text-xs text-gray-400">
                       Internal: department journals · External: Google Scholar
@@ -529,7 +560,7 @@ export default function SubmissionReviewContent({
               </CardTitle>
             </CardHeader>
             <CardContent>
-              <p className="text-sm text-[#333] leading-relaxed">
+              <p className="text-justify text-pretty text-sm leading-relaxed text-[#333]">
                 {submission.researchGapAnalysis}
               </p>
             </CardContent>
@@ -558,11 +589,11 @@ export default function SubmissionReviewContent({
                     className="p-3 rounded-lg bg-gray-50 border space-y-1"
                   >
                     <div className="flex items-start gap-3">
-                      <div className="flex h-7 w-7 items-center justify-center rounded-full bg-[#8B1A1A]/10 text-xs font-bold text-[#8B1A1A] shrink-0">
+                      <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[#8B1A1A]/10 text-xs font-bold text-[#8B1A1A]">
                         {i + 1}
                       </div>
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium text-[#333]">
+                      <div className="min-w-0 flex-1">
+                        <p className="break-words text-sm font-medium leading-snug text-[#333]">
                           {match.title || match.proposedTitle}
                         </p>
                         <p className="text-xs text-gray-500 mt-0.5">
@@ -578,7 +609,9 @@ export default function SubmissionReviewContent({
                           </span>
                         )}
                       </div>
-                      <div className="shrink-0 flex items-center gap-2">
+                      {
+}
+                      <div className="hidden shrink-0 items-center gap-2 sm:flex">
                         <JournalViewerButton
                           journalId={match.journalId}
                           highlightPhrases={match.highlightPhrases}
@@ -593,6 +626,24 @@ export default function SubmissionReviewContent({
                           {match.similarityPercent.toFixed(2)}%
                         </span>
                       </div>
+                    </div>
+                    {
+
+}
+                    <div className="mt-2 flex items-center justify-between gap-2 pl-10 sm:hidden">
+                      <JournalViewerButton
+                        journalId={match.journalId}
+                        highlightPhrases={match.highlightPhrases}
+                      />
+                      <span
+                        className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${
+                          match.similarityPercent >= HIGH_SIMILARITY_THRESHOLD
+                            ? "bg-red-50 text-red-700"
+                            : "bg-green-50 text-green-700"
+                        }`}
+                      >
+                        {match.similarityPercent.toFixed(2)}%
+                      </span>
                     </div>
                     <AspectScoreBreakdown
                       aspects={match.aspects}
@@ -642,7 +693,7 @@ export default function SubmissionReviewContent({
                         {i + 1}
                       </div>
                       <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium text-[#333]">
+                        <p className="break-words text-sm font-medium leading-snug text-[#333]">
                           {match.title}
                         </p>
                         <p className="text-xs text-gray-500 mt-0.5">
@@ -666,9 +717,9 @@ export default function SubmissionReviewContent({
                           </a>
                         )}
                       </div>
-                      <div className="shrink-0">
+                      <div className="hidden shrink-0 sm:block">
                         <span
-                          className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
+                          className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${
                             match.similarityPercent >= HIGH_SIMILARITY_THRESHOLD
                               ? "bg-red-50 text-red-700"
                               : "bg-green-50 text-green-700"
@@ -677,6 +728,17 @@ export default function SubmissionReviewContent({
                           {match.similarityPercent.toFixed(2)}%
                         </span>
                       </div>
+                    </div>
+                    <div className="mt-2 flex justify-end pl-10 sm:hidden">
+                      <span
+                        className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${
+                          match.similarityPercent >= HIGH_SIMILARITY_THRESHOLD
+                            ? "bg-red-50 text-red-700"
+                            : "bg-green-50 text-green-700"
+                        }`}
+                      >
+                        {match.similarityPercent.toFixed(2)}%
+                      </span>
                     </div>
                     <AspectScoreBreakdown
                       aspects={match.aspects}

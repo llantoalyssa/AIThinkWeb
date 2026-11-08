@@ -37,6 +37,12 @@ export default function ConfirmDeleteModal({
   variant = "danger",
 }: Props) {
   const isDanger = variant === "danger";
+
+  // Radix locks the page by setting `pointer-events: none` on <body> while a
+  // dialog/menu is open. Closing a dialog that was opened FROM a dropdown menu
+  // can leave that inline style behind, which makes the whole page unclickable
+  // until a reload (the "card stopped responding after Delete → Cancel" bug).
+  // Clear the leaked style whenever the modal closes.
   function handleOpenChange(next: boolean) {
     if (!next && typeof document !== "undefined") {
       window.requestAnimationFrame(() => {

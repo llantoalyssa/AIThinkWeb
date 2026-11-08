@@ -10,8 +10,8 @@ import {
   CornerDownRight,
   FileText,
   Lock,
-  ChevronLeft,
   ChevronRight,
+  ChevronDown,
   Pencil,
   Trash2,
   Check,
@@ -395,15 +395,24 @@ export default function AnnotationPanel({
 
   return (
     <>
-      {}
+      {
+}
       <button
         type="button"
         onClick={onToggle}
-        className="fixed bottom-6 right-6 z-50 flex h-12 w-12 items-center justify-center rounded-full bg-amber-600 text-white shadow-lg hover:bg-amber-700 transition-colors"
+        className="fixed bottom-20 right-4 z-50 flex h-12 w-12 items-center justify-center gap-2 whitespace-nowrap rounded-full bg-amber-600 px-0 text-white shadow-lg transition-colors hover:bg-amber-700 sm:right-6 sm:w-auto sm:px-5"
         title={open ? "Collapse comments" : "Open comments"}
-        aria-label="Toggle comment panel"
+        aria-label={open ? "Collapse comments" : "Open comments"}
       >
-        {open ? <ChevronRight className="h-5 w-5" /> : <MessageSquareText className="h-5 w-5" />}
+        {open ? (
+          <ChevronRight className="h-5 w-5" />
+        ) : (
+          <MessageSquareText className="h-6 w-6" />
+        )}
+        {}
+        <span className="hidden text-sm font-semibold sm:inline">
+          {open ? "Hide" : "Comments"}
+        </span>
         {!open && openCount > 0 && (
           <span className="absolute -top-1 -right-1 flex h-5 w-5 items-center justify-center rounded-full bg-[#8B1A1A] text-[10px] font-bold text-white">
             {openCount > 9 ? "9+" : openCount}
@@ -413,7 +422,7 @@ export default function AnnotationPanel({
 
       {}
       {open && (
-        <div className="fixed bottom-20 left-4 right-4 z-50 flex h-[70vh] max-h-[560px] w-auto flex-col overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl sm:bottom-24 sm:left-auto sm:right-6 sm:h-[560px] sm:w-[380px]">
+        <div className="fixed bottom-40 left-4 right-4 z-50 flex h-[70vh] max-h-[560px] w-auto flex-col overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl sm:bottom-24 sm:left-auto sm:right-6 sm:h-[560px] sm:w-[380px]">
           <div className="flex items-center gap-2 border-b bg-amber-600 px-4 py-3 text-white">
             <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-white/20">
               <MessageSquareText className="h-4 w-4" />
@@ -430,7 +439,7 @@ export default function AnnotationPanel({
               className="flex h-8 w-8 items-center justify-center rounded-lg text-white/80 hover:bg-white/20 hover:text-white"
               aria-label="Close comment panel"
             >
-              <ChevronLeft className="h-4 w-4" />
+              <ChevronDown className="h-4 w-4" />
             </button>
           </div>
 
@@ -493,7 +502,7 @@ export default function AnnotationPanel({
 
           <div className="border-t bg-white px-4 py-2.5 text-[10px] text-gray-400 flex items-center gap-1">
             <X className="h-3 w-3" />
-            Hover your comments for Edit / Delete options.
+            Highligt the paragraph or word to insert comments.
           </div>
         </div>
       )}

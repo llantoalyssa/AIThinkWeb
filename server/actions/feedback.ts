@@ -3,6 +3,10 @@
 import { createClient } from "@/server/supabase/server";
 import { createAdminClient } from "@/server/supabase/admin";
 import { getCurrentUser } from "@/server/actions/auth";
+import { getGrantedPermissions } from "@/server/actions/permissions";
+import { logAudit } from "@/server/audit";
+
+
 export type FeedbackItem = {
   id: string;
   userId: string;
@@ -20,6 +24,9 @@ export type SubmitFeedbackResult =
 export type FeedbackListResult =
   | { success: true; data: FeedbackItem[] }
   | { success: false; error: string };
+
+// ── Submit feedback (any authenticated user) ─────────────────
+
 export async function submitFeedback(input: {
   rating: number;
   description: string;
@@ -50,6 +57,7 @@ export async function submitFeedback(input: {
     console.error("[feedback] submit failed:", error);
     return { success: false, error: "Failed to submit feedback. Please try again." };
   }
+
   try {
     const admin = createAdminClient();
     if (admin) {
@@ -57,7 +65,7 @@ export async function submitFeedback(input: {
         .from("profiles")
         .select("id")
         .eq("role", "department")
-        .eq("is_active", true);
+        .or("is_active.is.null,is_active.eq.true");
 
       const recipients = (deptAccounts ?? [])
         .map((d) => d.id as string)
@@ -86,8 +94,15 @@ export async function submitFeedback(input: {
           );
 
         if (notifyErr) {
-          console.error("[feedback] department notify failed:", notifyErr.message);
+          console.error(
+            "[feedback] department notify failed:",
+            notifyErr.code === "23502" || notifyErr.code === "23514"
+              ? `${notifyErr.message} — apply migration 052 (feedback notifications)`
+              : `${notifyErr.code ?? ""} ${notifyErr.message}`,
+          );
         }
+      } else {
+        console.warn("[feedback] no active department account to notify");
       }
     }
   } catch (err) {
@@ -96,11 +111,20 @@ export async function submitFeedback(input: {
 
   return { success: true, message: "Thank you! Your feedback has been submitted." };
 }
+
+// ── List all feedback (department, or any role granted pages.feedback) ──
+
 export async function listAllFeedback(): Promise<FeedbackListResult> {
   const user = await getCurrentUser();
   if (!user) return { success: false, error: "You must be logged in." };
   if (user.role !== "department") {
-    return { success: false, error: "Only department accounts can view feedback." };
+    const granted = await getGrantedPermissions(user.id);
+    if (!granted.includes("pages.feedback")) {
+      return {
+        success: false,
+        error: "You do not have permission to view feedback.",
+      };
+    }
   }
 
   const supabase = await createClient();
@@ -154,6 +178,9 @@ export async function listAllFeedback(): Promise<FeedbackListResult> {
 
   return { success: true, data: items };
 }
+
+// ── Delete feedback (department only) ────────────────────────
+
 export async function deleteFeedback(
   id: string,
 ): Promise<SubmitFeedbackResult> {
@@ -170,5 +197,14 @@ export async function deleteFeedback(
     console.error("[feedback] delete failed:", error);
     return { success: false, error: "Failed to delete feedback." };
   }
+  await logAudit({
+    action: "feedback_deleted",
+    category: "deletion",
+    entityType: "feedback",
+    entityId: id,
+    description: "Deleted a feedback entry from the inbox.",
+    actor: { id: user.id, email: user.email, role: user.role },
+  });
+
   return { success: true, message: "Feedback deleted." };
 }

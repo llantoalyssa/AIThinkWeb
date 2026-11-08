@@ -1,4 +1,6 @@
 "use server";
+
+
 import { createClient } from "@/server/supabase/server";
 
 export type DiscoverTaf = {
@@ -10,7 +12,6 @@ export type DiscoverTaf = {
   date: string;
   status: string;
   combinedScore: number;
-
   version: number | null;
 };
 
@@ -44,9 +45,7 @@ export async function getDiscoverOverview(): Promise<DiscoverResult> {
   }
 
   const rows = (data || []) as RpcRow[];
-  return {
-    success: true,
-    data: rows.map((r) => ({
+  const mapped = rows.map((r) => ({
       title: r.title || "",
       owner: r.owner || "",
       sdgCategories: r.sdg_categories || [],
@@ -59,6 +58,16 @@ export async function getDiscoverOverview(): Promise<DiscoverResult> {
         r.version_number === null || r.version_number === undefined
           ? null
           : Number(r.version_number),
-    })),
+    }));
+  const timestamp = (iso: string): number => {
+    const time = Date.parse(iso);
+    return Number.isNaN(time) ? -Infinity : time;
   };
+  mapped.sort((a, b) => {
+    const delta = timestamp(b.date) - timestamp(a.date);
+    if (delta !== 0) return delta;
+    return a.title.localeCompare(b.title);
+  });
+
+  return { success: true, data: mapped };
 }

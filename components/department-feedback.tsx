@@ -7,6 +7,9 @@ import {
 } from "@/server/actions/feedback";
 import { Star, MessageSquareQuote, Loader2, Trash2, UserRound } from "lucide-react";
 import { toast } from "sonner";
+import TablePagination from "@/components/table-pagination";
+
+const FEEDBACK_PER_PAGE = 10;
 
 const ROLE_COLORS: Record<string, string> = {
   student: "bg-blue-50 text-blue-700 border-blue-200",
@@ -19,12 +22,15 @@ const ROLE_COLORS: Record<string, string> = {
 
 export default function DepartmentFeedback({
   initialItems,
+  canDelete = true,
 }: {
   initialItems?: FeedbackItem[];
+  canDelete?: boolean;
 } = {}) {
   const [items, setItems] = useState<FeedbackItem[]>(initialItems ?? []);
   const [loading, setLoading] = useState(!initialItems);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [feedbackPage, setFeedbackPage] = useState(1);
 
   useEffect(() => {
     let cancelled = false;
@@ -60,6 +66,12 @@ export default function DepartmentFeedback({
     : 0;
   const counts = [1, 2, 3, 4, 5].map(
     (n) => items.filter((i) => i.rating === n).length,
+  );
+  const totalPages = Math.max(1, Math.ceil(items.length / FEEDBACK_PER_PAGE));
+  const safePage = Math.min(feedbackPage, totalPages);
+  const pagedItems = items.slice(
+    (safePage - 1) * FEEDBACK_PER_PAGE,
+    safePage * FEEDBACK_PER_PAGE,
   );
 
   return (
@@ -99,7 +111,7 @@ export default function DepartmentFeedback({
         </div>
       ) : (
         <div className="space-y-3">
-          {items.map((item) => (
+          {pagedItems.map((item) => (
             <div key={item.id} className="rounded-xl border border-gray-200 bg-white p-4">
               <div className="flex items-start justify-between gap-3">
                 <div className="flex items-center gap-3 min-w-0">
@@ -126,19 +138,29 @@ export default function DepartmentFeedback({
                       <Star key={n} className={`h-4 w-4 ${n <= item.rating ? "fill-amber-400 text-amber-400" : "text-gray-300"}`} />
                     ))}
                   </div>
-                  <button
-                    onClick={() => handleDelete(item.id)}
-                    disabled={deletingId === item.id}
-                    className="p-1 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors disabled:opacity-40 cursor-pointer"
-                    title="Delete feedback"
-                  >
-                    {deletingId === item.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
-                  </button>
+                  {canDelete && (
+                    <button
+                      onClick={() => handleDelete(item.id)}
+                      disabled={deletingId === item.id}
+                      className="p-1 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors disabled:opacity-40 cursor-pointer"
+                      title="Delete feedback"
+                    >
+                      {deletingId === item.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+                    </button>
+                  )}
                 </div>
               </div>
               <p className="mt-3 text-sm text-gray-600 whitespace-pre-wrap break-words">{item.description}</p>
             </div>
           ))}
+
+          <TablePagination
+            page={safePage}
+            perPage={FEEDBACK_PER_PAGE}
+            total={items.length}
+            onChange={setFeedbackPage}
+            label="entry"
+          />
         </div>
       )}
     </div>

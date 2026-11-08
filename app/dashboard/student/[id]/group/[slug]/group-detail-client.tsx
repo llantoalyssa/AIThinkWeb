@@ -17,6 +17,7 @@ import {
   type GroupSubmission,
 } from '@/server/actions/group-submissions'
 import RecentTafs from '@/components/recent-tafs'
+import SidebarCollapseHandle from "@/components/sidebar-collapse-handle";
 import { UserMenu } from '@/components/user-menu'
 import { useUnreadNotifications } from '@/hooks/use-unread-notifications'
 import { Button } from '@/components/ui/button'
@@ -38,16 +39,15 @@ import {
 } from '@/components/ui/select'
 import { Label } from '@/components/ui/label'
 import { toast } from 'sonner'
+import { navItemsFor, type NavItem } from '@/components/nav-items'
 import {
   LogOut,
-  FilePlus,
   Loader2,
   ChevronLeft,
   ChevronRight,
   Menu,
   X,
   Users,
-  Home,
   ClipboardList,
   Calendar,
   UserCheck,
@@ -58,19 +58,13 @@ import {
   AlertCircle,
   Eye,
   FileText,
-  BarChart3,
-  Star,
-  Bell,
-  User,
+  Archive as ArchiveIcon,
 } from 'lucide-react'
 
-type NavItem = {
-  id: string;
-  icon: React.ReactNode;
-  label: string;
-  href: string;
-  badge?: number;
-};
+/** Student nav items come from the ONE shared source (components/nav-items.tsx).
+ *  Two things stay caller-side by design: the unread NOTIFICATIONS badge
+ *  (wiring keyed on item.id) and the href, which studentItems() always sets. */
+type StudentNavItem = NavItem & { href: string; badge?: number };
 
 const SUBMISSION_STATUS_LABELS: Record<string, string> = {
   pending: 'Pending',
@@ -125,13 +119,14 @@ export default function StudentGroupDetailPage({
 
   const unreadCount = useUnreadNotifications(userId, initialUnreadCount);
 
-  const navItems: NavItem[] = [
-    { id: 'dashboard', icon: <Home className="h-5 w-5" />, label: 'Dashboard', href: `/dashboard/student/${userId}` },
-    { id: 'taf', icon: <FilePlus className="h-5 w-5" />, label: 'Topic Abstract Form', href: `/dashboard/student/${userId}/taf` },
-    { id: 'advisory-group', icon: <Users className="h-5 w-5" />, label: 'Advisory Group', href: `/dashboard/student/${userId}/group` },
-    { id: 'feedback', icon: <Star className="h-5 w-5" />, label: 'Feedback', href: `/dashboard/student/${userId}/feedback` },
-    { id: 'notifications', icon: <Bell className="h-5 w-5" />, label: 'Notifications', href: `/dashboard/student/${userId}/notifications`, badge: unreadCount },
-  ];
+  // The student's five items come from the ONE shared source.
+  const navItems: StudentNavItem[] = navItemsFor({ role: 'student', userId }).map(
+    (item): StudentNavItem => ({
+      ...item,
+      href: item.href ?? '',
+      badge: item.id === 'notifications' ? unreadCount : undefined,
+    }),
+  );
 
   const currentUser: CurrentUser | null = initialUser;
   const loading = false;
@@ -277,14 +272,6 @@ export default function StudentGroupDetailPage({
           {mobileMenuOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
         </button>
 
-        <button
-          onClick={() => setSidebarExpanded(!sidebarExpanded)}
-          className="hidden md:flex h-9 w-9 items-center justify-center rounded-lg text-gray-400 hover:bg-gray-100 hover:text-gray-600"
-          title={sidebarExpanded ? 'Collapse sidebar' : 'Expand sidebar'}
-        >
-          {sidebarExpanded ? <ChevronLeft className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
-        </button>
-
         <h1 className="text-lg font-semibold text-[#333] flex-1">
           AIThink
         </h1>
@@ -294,9 +281,10 @@ export default function StudentGroupDetailPage({
 
       <div className="flex flex-1 relative">
         {/* ── Desktop sidebar ─────────────────────────────────────── */}
+        <div className="group/sidebar relative hidden shrink-0 self-start sticky top-14 h-[calc(100vh-3.5rem)] md:block">
         <aside
-          className={`hidden md:flex flex-col border-r bg-white transition-all duration-200 self-start sticky top-14 h-[calc(100vh-3.5rem)] overflow-y-auto ${
-            sidebarExpanded ? 'w-56' : 'w-16'
+          className={`flex h-full flex-col border-r bg-white transition-all duration-200 overflow-y-auto ${
+            sidebarExpanded ? 'w-64' : 'w-16'
           } shrink-0`}
         >
           <nav className="flex flex-col gap-1 p-2 pt-4">
@@ -327,6 +315,11 @@ export default function StudentGroupDetailPage({
             </div>
           )}
         </aside>
+          <SidebarCollapseHandle
+            expanded={sidebarExpanded}
+            onToggle={() => setSidebarExpanded((v) => !v)}
+          />
+        </div>
 
         {/* ── Mobile overlay drawer ────────────────────────────────── */}
         {mobileMenuOpen && (
@@ -335,7 +328,7 @@ export default function StudentGroupDetailPage({
               className="absolute inset-0 bg-black/30"
               onClick={() => setMobileMenuOpen(false)}
             />
-            <aside className="absolute left-0 top-0 bottom-0 w-56 overflow-y-auto bg-white shadow-xl">
+            <aside className="absolute left-0 top-14 bottom-0 z-40 w-64 overflow-y-auto bg-white shadow-xl">
               <nav className="flex flex-col gap-1 p-3 pt-6">
                 {navItems.map((item) => (
                   <button
@@ -383,14 +376,24 @@ export default function StudentGroupDetailPage({
                   </span>
                 </nav>
               </div> */}
-              <div className="ml-auto flex items-center gap-2 shrink-0">
-                <Button
-                  onClick={handleOpenSubmitDialog}
-                  className="bg-green-600 hover:bg-green-700 text-white"
-                >
-                  <Send className="h-4 w-4 mr-1.5" />
-                  Submit TAF
-                </Button>
+              <div className="ml-auto flex flex-wrap items-center gap-2 sm:flex-nowrap">
+                {/* ARCHIVED → read-only: no new submissions and no export. The
+                    only action left is Leave, which frees the student to join
+                    the next advisory group. */}
+                {group && !group.isActive ? (
+                  <span className="inline-flex items-center gap-1.5 rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-700">
+                    <ArchiveIcon className="h-3.5 w-3.5" />
+                    Archived
+                  </span>
+                ) : (
+                  <Button
+                    onClick={handleOpenSubmitDialog}
+                    className="bg-green-600 hover:bg-green-700 text-white"
+                  >
+                    <Send className="h-4 w-4 mr-1.5" />
+                    Submit TAF
+                  </Button>
+                )}
                 <Button
                   onClick={() => setLeaveDialogOpen(true)}
                   variant="outline"
@@ -401,6 +404,18 @@ export default function StudentGroupDetailPage({
                 </Button>
               </div>
             </div>
+
+            {group && !group.isActive && (
+              <div className="mb-4 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5 text-xs text-amber-800">
+                <ArchiveIcon className="mt-0.5 h-4 w-4 shrink-0" />
+                <span>
+                  Your adviser archived this advisory group. Everything already
+                  submitted stays readable, but the group is now view-only —
+                  submitting and exporting are disabled. Leave the group to join
+                  a new one.
+                </span>
+              </div>
+            )}
 
             {/* Back button */}
             {/* <button
@@ -619,15 +634,18 @@ export default function StudentGroupDetailPage({
                             <p className="text-xs text-gray-400 mt-0.5">
                               V{sub.analysisVersion} • Similarity: {sub.combinedScore}%
                             </p>
+                            {/* Status sits UNDER the similarity, matching the
+                                adviser/approver group view — beside the title it
+                                squeezed both on a phone. */}
+                            <span
+                              className={`mt-1.5 inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-[11px] font-medium ${
+                                SUBMISSION_STATUS_COLORS[sub.status] || 'bg-gray-100 text-gray-600'
+                              }`}
+                            >
+                              {SUBMISSION_STATUS_ICONS[sub.status]}
+                              {SUBMISSION_STATUS_LABELS[sub.status] || sub.status}
+                            </span>
                           </div>
-                          <span
-                            className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-medium border shrink-0 ${
-                              SUBMISSION_STATUS_COLORS[sub.status] || 'bg-gray-100 text-gray-600'
-                            }`}
-                          >
-                            {SUBMISSION_STATUS_ICONS[sub.status]}
-                            {SUBMISSION_STATUS_LABELS[sub.status] || sub.status}
-                          </span>
                         </div>
                       </div>
                     ))}
@@ -641,28 +659,6 @@ export default function StudentGroupDetailPage({
         </main>
       </div>
 
-      {/* ── Mobile bottom nav ──────────────────────────────────────── */}
-      <nav className="md:hidden flex items-center justify-around border-t bg-white px-2 py-1 safe-area-bottom">
-        {navItems.map((item) => (
-          <button
-            key={item.id}
-            onClick={() => router.push(item.href)}
-            className={`relative flex flex-col items-center gap-0.5 px-3 py-2 rounded-lg text-xs transition-colors ${
-              item.id === 'advisory-group'
-                ? 'text-[#8B1A1A]'
-                : 'text-gray-400 hover:text-gray-600'
-            }`}
-          >
-            {item.icon}
-            {item.badge ? (
-              <span className="absolute -top-0.5 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-red-500 text-[9px] font-bold text-white">
-                {item.badge > 9 ? '9+' : item.badge}
-              </span>
-            ) : null}
-            <span className="text-[10px]">{item.label}</span>
-          </button>
-        ))}
-      </nav>
 
       {/* ── Footer ──────────────────────────────────────────────────── */}
       <footer className="hidden md:block bg-[#8B1A1A] text-white text-center text-xs py-3">

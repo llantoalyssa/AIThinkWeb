@@ -1,10 +1,12 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import Link from 'next/link'
 import { useRouter, useParams } from 'next/navigation'
 import { type CurrentUser } from '@/server/actions/auth'
 import { getAdviserDashboardData } from '@/server/actions/adviser-shell'
 import { UserMenu } from '@/components/user-menu'
+import SidebarCollapseHandle from "@/components/sidebar-collapse-handle";
 import NotificationBell from '@/components/notification-bell'
 import {
   getMyNotifications,
@@ -20,10 +22,9 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { navItemsFor, type NavItem } from '@/components/nav-items'
 import {
-  BarChart3,
   Users,
-  Bell,
   Loader2,
   Plus,
   Trash2,
@@ -36,6 +37,8 @@ import {
   FileText,
   Archive,
   RotateCcw,
+  Search,
+  UserRound,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import {
@@ -56,15 +59,6 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Textarea } from '@/components/ui/textarea'
 
-type NavItem = {
-  icon: React.ReactNode;
-  label: string;
-  href?: string;
-  active?: boolean;
-  onClick?: () => void;
-  badge?: number;
-};
-
 // Helper to convert name to URL slug
 function slugify(name: string): string {
   return name
@@ -78,15 +72,33 @@ export default function AdviserDashboardPage() {
   const params = useParams<{ id: string }>();
   const urlUserId = params.id;
 
-  const navItems: NavItem[] = [
-    { icon: <BarChart3 className="h-5 w-5" />, label: "Dashboard", href: `/dashboard/adviser/${urlUserId}`, active: true },
-    { icon: <Bell className="h-5 w-5" />, label: "Notifications" },
-  ];
+  // The adviser's two items come from the ONE shared source
+  // (components/nav-items.tsx) — no local copy here any more. This page IS the
+  // Dashboard destination, so that item keeps its highlight: `active` is the
+  // CALLER's contract, and nav-items deliberately leaves it unset. The
+  // Notifications item now carries its own href, so the click no longer needs a
+  // label special-case to reach the notifications page.
+  // The account's effective permission keys — arrive with the dashboard bundle
+  // below. Undefined = not resolved yet, which renders the adviser's default two
+  // items (permissive) rather than an empty nav for a beat.
+  const [permissions, setPermissions] = useState<string[] | undefined>(undefined);
+
+  const navItems: NavItem[] = navItemsFor({
+    role: "adviser",
+    userId: urlUserId,
+    permissions,
+  }).map(
+    (item): NavItem => (item.id === "dashboard" ? { ...item, active: true } : item),
+  );
 
   const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
   const [advisoryGroups, setAdvisoryGroups] = useState<AdvisoryGroup[]>([]);
   const [loading, setLoading] = useState(true);
   const [totalStudents, setTotalStudents] = useState<number | null>(null);
+  // Joined-student count per group id, shown on each group card.
+  const [memberCounts, setMemberCounts] = useState<Record<string, number>>({});
+  // Pending-TAF count per group id, shown as each card's badge.
+  const [pendingByGroup, setPendingByGroup] = useState<Record<string, number>>({});
   const [sidebarExpanded, setSidebarExpanded] = useState(true);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
@@ -114,6 +126,9 @@ export default function AdviserDashboardPage() {
 
   // Active/Archived filter — default shows ACTIVE groups.
   const [groupFilter, setGroupFilter] = useState<'active' | 'archived'>('active');
+  // Search + creation-year, applied to whichever tab is open.
+  const [groupQuery, setGroupQuery] = useState('');
+  const [groupYear, setGroupYear] = useState('all');
   const [archivingId, setArchivingId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -133,6 +148,10 @@ export default function AdviserDashboardPage() {
         router.replace(`/dashboard/${userResult.role}/${userResult.id}`);
         return;
       }
+      // Granted pages become nav items (Research Analytics / Approved TAF /
+      // Journals / Audit Trail) — set BEFORE the loading flag drops so the nav
+      // is complete on the first painted frame.
+      setPermissions(data.permissions ?? []);
       // Validate URL user ID matches current user
       if (urlUserId !== userResult.id) {
         router.replace(`/dashboard/${userResult.role}/${userResult.id}`);
@@ -142,6 +161,8 @@ export default function AdviserDashboardPage() {
 
       setAdvisoryGroups(data.groups);
       setTotalStudents(data.totalStudents);
+      setMemberCounts(data.memberCounts);
+      setPendingByGroup(data.pendingByGroup);
       setPendingApprovals(data.pendingApprovals);
       setPendingLoaded(true);
       setUnreadCount(data.unreadCount);
@@ -274,9 +295,33 @@ export default function AdviserDashboardPage() {
   const greeting = firstName || 'Adviser';
 
   // Groups filtered by the Active/Archived toggle.
-  const visibleGroups = advisoryGroups.filter((g) =>
+  /** Creation year of a group, in Philippine time ("" when unknown). */
+  const groupYearOf = (createdAt: string | null | undefined): string => {
+    if (!createdAt) return '';
+    const date = new Date(createdAt);
+    if (Number.isNaN(date.getTime())) return '';
+    return String(
+      new Date(date.toLocaleString('en-US', { timeZone: 'Asia/Manila' })).getFullYear(),
+    );
+  };
+
+  const tabGroups = advisoryGroups.filter((g) =>
     groupFilter === 'active' ? g.isActive : !g.isActive
   );
+
+  const groupYears = Array.from(
+    new Set(tabGroups.map((g) => groupYearOf(g.createdAt)).filter(Boolean)),
+  ).sort((a, b) => Number(b) - Number(a));
+
+  const visibleGroups = tabGroups.filter((g) => {
+    if (groupYear !== 'all' && groupYearOf(g.createdAt) !== groupYear) return false;
+    const q = groupQuery.trim().toLowerCase();
+    if (!q) return true;
+    return (
+      g.name.toLowerCase().includes(q) ||
+      (g.description ?? '').toLowerCase().includes(q)
+    );
+  });
 
   return (
     <div className="flex min-h-screen flex-col bg-gray-50/50">
@@ -290,14 +335,6 @@ export default function AdviserDashboardPage() {
           {mobileMenuOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
         </button>
 
-        {/* Sidebar toggle (desktop) */}
-        <button
-          onClick={() => setSidebarExpanded(!sidebarExpanded)}
-          className="hidden md:flex h-9 w-9 items-center justify-center rounded-lg text-gray-400 hover:bg-gray-100 hover:text-gray-600"
-          title={sidebarExpanded ? 'Collapse sidebar' : 'Expand sidebar'}
-        >
-          {sidebarExpanded ? <ChevronLeft className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
-        </button>
 
         {/* Title */}
         <h1 className="text-lg font-semibold text-[#333] flex-1">
@@ -326,23 +363,25 @@ export default function AdviserDashboardPage() {
 
       <div className="flex flex-1 relative">
         {/* ── Desktop sidebar ───────────────────────────────────────────────────────────────── */}
+        <div className="group/sidebar relative hidden shrink-0 self-start sticky top-14 h-[calc(100vh-3.5rem)] md:block">
         <aside
-          className={`hidden md:flex flex-col border-r bg-white transition-all duration-200 self-start sticky top-14 h-[calc(100vh-3.5rem)] overflow-y-auto ${
-            sidebarExpanded ? 'w-48' : 'w-16'
+          className={`flex h-full flex-col border-r bg-white transition-all duration-200 overflow-y-auto ${
+            sidebarExpanded ? 'w-64' : 'w-16'
           } shrink-0`}
         >
           <nav className="flex flex-col gap-1 p-2 pt-4">
             {navItems.map((item) => {
-              // "Notifications" opens the full notifications page. Badge = the
-              // same unread count as the header bell (kept in sync via event).
-              const isNotif = item.label === 'Notifications';
+              // "Notifications" opens the full notifications page — its href now
+              // comes from the shared source, so the click needs no special-case.
+              // Badge = the same unread count as the header bell (kept in sync
+              // via the shared event).
+              const isNotif = item.id === 'notifications';
               const count = isNotif ? unreadCount : 0;
               return (
                 <button
-                  key={item.label}
+                  key={item.id}
                   onClick={() => {
-                    if (isNotif) { router.push(`/dashboard/adviser/${urlUserId}/notifications`); return; }
-                    item.href && router.push(item.href);
+                    if (item.href) router.push(item.href);
                   }}
                   className={`flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm transition-colors ${
                     isNotif
@@ -367,6 +406,11 @@ export default function AdviserDashboardPage() {
             })}
           </nav>
         </aside>
+          <SidebarCollapseHandle
+            expanded={sidebarExpanded}
+            onToggle={() => setSidebarExpanded((v) => !v)}
+          />
+        </div>
 
         {/* ── Mobile overlay drawer ───────────────────────────────────────────────────────────── */}
         {mobileMenuOpen && (
@@ -377,22 +421,15 @@ export default function AdviserDashboardPage() {
               onClick={() => setMobileMenuOpen(false)}
             />
             {/* Drawer */}
-            <aside className="absolute left-0 top-0 bottom-0 w-56 overflow-y-auto bg-white shadow-xl">
+            <aside className="absolute left-0 top-14 bottom-0 z-40 w-64 overflow-y-auto bg-white shadow-xl">
               <nav className="flex flex-col gap-1 p-3 pt-6">
                 {navItems.map((item) => {
-                  const isNotif = item.label === 'Notifications';
+                  const isNotif = item.id === 'notifications';
                   return (
                     <button
-                      key={item.label}
+                      key={item.id}
                       onClick={() => {
-                        if (isNotif) {
-                          setMobileMenuOpen(false);
-                          router.push(`/dashboard/adviser/${urlUserId}/notifications`);
-                          return;
-                        }
-                        if (item.href) {
-                          router.push(item.href);
-                        }
+                        if (item.href) router.push(item.href);
                         setMobileMenuOpen(false);
                       }}
                       className={`flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm transition-colors ${
@@ -476,13 +513,16 @@ export default function AdviserDashboardPage() {
                       </Label>
                       <Textarea
                         id="group-description"
-                        placeholder="Brief description of this advisory group... (optional)"
+                        placeholder="Short description of this advisory group... (optional)"
                         value={newGroupDescription}
                         onChange={(e) => setNewGroupDescription(e.target.value)}
                         disabled={creatingGroup}
-                        rows={3}
-                        maxLength={500}
+                        rows={2}
+                        maxLength={200}
                       />
+                      <p className="text-right text-[11px] text-gray-400">
+                        {newGroupDescription.length}/200
+                      </p>
                     </div>
                     <DialogFooter>
                       <DialogClose asChild>
@@ -547,21 +587,31 @@ export default function AdviserDashboardPage() {
                 </CardContent>
               </Card>
 
-              <Card>
-                <CardHeader className="flex flex-row items-center gap-3 pb-2">
-                  <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-green-50 shrink-0">
-                    <FileText className="h-5 w-5 text-green-600" />
-                  </div>
-                  <CardTitle className="text-sm font-medium text-gray-500">
-                    Pending TAFs
-                  </CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <p className="text-2xl font-bold text-[#333]">
-                    {pendingLoaded ? pendingApprovals.length : '—'}
-                  </p>
-                </CardContent>
-              </Card>
+              {/* Clickable: the count alone forced an adviser to open every
+                  advisory group to find out WHICH TAFs were waiting. This opens
+                  the flat Pending TAFs list across all of their groups. */}
+              <Link
+                href={`/dashboard/adviser/${urlUserId}/pending`}
+                className="block rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#8B1A1A]/30"
+              >
+                <Card className="cursor-pointer transition-colors hover:border-[#8B1A1A]/30 hover:bg-gray-50/60">
+                  <CardHeader className="flex flex-row items-center gap-3 pb-2">
+                    <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-green-50 shrink-0">
+                      <FileText className="h-5 w-5 text-green-600" />
+                    </div>
+                    <CardTitle className="flex-1 text-sm font-medium text-gray-500">
+                      Pending TAFs
+                    </CardTitle>
+                    <ChevronRight className="h-4 w-4 text-gray-300" />
+                  </CardHeader>
+                  <CardContent>
+                    <p className="text-2xl font-bold text-[#333]">
+                      {pendingLoaded ? pendingApprovals.length : '—'}
+                    </p>
+                    <p className="mt-0.5 text-xs text-gray-400">View all</p>
+                  </CardContent>
+                </Card>
+              </Link>
             </div>
 
             {/* Advisory Groups Grid */}
@@ -595,7 +645,32 @@ export default function AdviserDashboardPage() {
                   </button>
                 </div>
               </div>
-              
+
+              {/* Search + creation year, applied to whichever tab is open. */}
+              <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center">
+                <div className="relative flex-1">
+                  <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
+                  <Input
+                    value={groupQuery}
+                    onChange={(e) => setGroupQuery(e.target.value)}
+                    placeholder="Search group name or description..."
+                    className="pl-9"
+                  />
+                </div>
+                <select
+                  value={groupYear}
+                  onChange={(e) => setGroupYear(e.target.value)}
+                  className="cursor-pointer rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-600 focus:outline-none focus:ring-2 focus:ring-[#8B1A1A]/30"
+                >
+                  <option value="all">All Years</option>
+                  {groupYears.map((year) => (
+                    <option key={year} value={year}>
+                      {year}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
               {visibleGroups.length === 0 ? (
                 <Card className="border-dashed">
                   <CardContent className="flex flex-col items-center justify-center py-12 text-center">
@@ -603,7 +678,11 @@ export default function AdviserDashboardPage() {
                       <FolderOpen className="h-8 w-8 text-gray-400" />
                     </div>
                     <h3 className="text-lg font-medium text-[#333] mb-2">
-                      {groupFilter === 'active' ? 'No active advisory groups' : 'No archived advisory groups'}
+                      {groupQuery.trim() || groupYear !== 'all'
+                        ? 'No advisory groups match your filters'
+                        : groupFilter === 'active'
+                          ? 'No active advisory groups'
+                          : 'No archived advisory groups'}
                     </h3>
                     <p className="text-sm text-gray-500 mb-4 max-w-sm">
                       {groupFilter === 'active'
@@ -633,11 +712,35 @@ export default function AdviserDashboardPage() {
                         group.isActive ? 'border-l-4 border-l-[#8B1A1A]' : 'border-l-4 border-l-gray-300 opacity-90'
                       }`}
                       onClick={() => navigateToGroup(group)}
+                      // Warm the route on hover so the click is not a cold load.
+                      onMouseEnter={() =>
+                        router.prefetch(`/dashboard/adviser/${urlUserId}/group/${slugify(group.name)}`)
+                      }
                     >
                       <CardHeader className="pb-3">
                         <div className="flex items-start justify-between">
                           <CardTitle className="text-base font-semibold text-[#333] line-clamp-1">
                             {group.name}
+                            {/* Joined students in THIS group: count, then the
+                                person icon. */}
+                            <span
+                              className="ml-2 inline-flex items-center gap-1 rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-semibold text-blue-700 align-middle"
+                              title="Students who joined this group"
+                            >
+                              {memberCounts[group.id] ?? 0}
+                              <UserRound className="h-3 w-3" />
+                            </span>
+                            {/* Pending TAFs in THIS group — the same badge the
+                                associate dean / dean cards show. */}
+                            {(pendingByGroup[group.id] ?? 0) > 0 && (
+                              <span
+                                className="ml-2 inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-semibold text-amber-700 align-middle"
+                                title="TAFs from this group awaiting a decision"
+                              >
+                                {pendingByGroup[group.id]}
+                                <FileText className="h-3 w-3" />
+                              </span>
+                            )}
                             {!group.isActive && (
                               <span className="ml-2 inline-flex items-center gap-1 rounded-full bg-gray-100 px-2 py-0.5 text-[10px] font-semibold text-gray-500 uppercase tracking-wide align-middle">
                                 <Archive className="h-3 w-3" /> Archived
@@ -691,7 +794,7 @@ export default function AdviserDashboardPage() {
                         </CardDescription>
                       </CardHeader>
                       <CardContent className="pt-0">
-                        <p className="text-sm text-gray-600 line-clamp-2">
+                        <p className="text-sm text-gray-600 line-clamp-2 break-words">
                           {group.description || 'No description provided.'}
                         </p>
                         <div className="mt-4 flex items-center justify-between">
@@ -714,19 +817,6 @@ export default function AdviserDashboardPage() {
                       </CardContent>
                     </Card>
                   ))}
-                  
-                  {/* Add New Group Card — only on the Active tab */}
-                  {groupFilter === 'active' && (
-                    <Card 
-                      className="border-dashed cursor-pointer hover:border-green-500 hover:bg-green-50/50 transition-colors flex flex-col items-center justify-center py-8 min-h-[180px]"
-                      onClick={() => setCreateDialogOpen(true)}
-                    >
-                      <div className="flex h-12 w-12 items-center justify-center rounded-full bg-green-100 mb-3">
-                        <Plus className="h-6 w-6 text-green-600" />
-                      </div>
-                      <p className="text-sm font-medium text-green-600">Create New Group</p>
-                    </Card>
-                  )}
                 </div>
               )}
             </div>
@@ -735,22 +825,6 @@ export default function AdviserDashboardPage() {
         </main>
       </div>
 
-      {/* ── Mobile bottom nav ───────────────────────────────────────────────────────────────────── */}
-      <nav className="md:hidden flex items-center justify-around border-t bg-white px-2 py-1 safe-area-bottom">
-        {navItems.map((item) => (
-          <button
-            key={item.label}
-            className={`flex flex-col items-center gap-0.5 px-3 py-2 rounded-lg text-xs transition-colors ${
-              item.active
-                ? 'text-[#8B1A1A]'
-                : 'text-gray-400 hover:text-gray-600'
-            }`}
-          >
-            {item.icon}
-            <span className="text-[10px]">{item.label}</span>
-          </button>
-        ))}
-      </nav>
 
       {/* ── Footer ────────────────────────────────────────────────────────────────────────────────── */}
       <footer className="hidden md:block bg-[#8B1A1A] text-white text-center text-xs py-3">

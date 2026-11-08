@@ -9,36 +9,29 @@ import {
   type SubmissionWithAnalysis,
 } from '@/server/actions/group-submissions'
 import SubmissionReviewContent from '@/components/submission-review-content'
+import SidebarCollapseHandle from "@/components/sidebar-collapse-handle";
 import RecentTafs from '@/components/recent-tafs'
 import { useUnreadNotifications } from '@/hooks/use-unread-notifications'
 import { UserMenu } from '@/components/user-menu'
 import { unsubmitTAF } from '@/server/actions/approval-workflow'
 import { toast } from 'sonner'
+import { navItemsFor, type NavItem } from '@/components/nav-items'
 import {
-  LogOut,
   Loader2,
   ChevronLeft,
   ChevronRight,
   Menu,
   X,
-  Users,
-  Home,
-  FilePlus,
   AlertCircle,
   CheckCircle2 as CheckCircle2Icon,
   Undo2,
-  Star,
-  Bell,
-  User,
-} from 'lucide-react'
+  Archive as ArchiveIcon,
+} from 'lucide-react' 
 
-type NavItem = {
-  id: string;
-  icon: React.ReactNode;
-  label: string;
-  href: string;
-  badge?: number;
-};
+/** Student nav items come from the ONE shared source (components/nav-items.tsx).
+ *  Two things stay caller-side by design: the unread NOTIFICATIONS badge
+ *  (wiring keyed on item.id) and the href, which studentItems() always sets. */
+type StudentNavItem = NavItem & { href: string; badge?: number };
 
 type Props = {
   /** Supplied by the SERVER (see page.tsx): identity, the submission record,
@@ -50,6 +43,8 @@ type Props = {
   initialError: string | null;
   /** Absent when the server fetch failed — the child then loads its own. */
   initialRecents?: RecentTAFEntry[];
+  /** The group this TAF belongs to is ARCHIVED → read-only, no export. */
+  groupArchived?: boolean;
 };
 
 export default function StudentSubmissionViewPage({
@@ -58,6 +53,7 @@ export default function StudentSubmissionViewPage({
   initialSubmission,
   initialError,
   initialRecents,
+  groupArchived = false,
 }: Props) {
   const router = useRouter();
   const params = useParams<{ id: string; slug: string; submissionId: string }>();
@@ -67,13 +63,14 @@ export default function StudentSubmissionViewPage({
 
   const unreadCount = useUnreadNotifications(userId, initialUnreadCount);
 
-  const navItems: NavItem[] = [
-    { id: 'dashboard', icon: <Home className="h-5 w-5" />, label: 'Dashboard', href: `/dashboard/student/${userId}` },
-    { id: 'taf', icon: <FilePlus className="h-5 w-5" />, label: 'Topic Abstract Form', href: `/dashboard/student/${userId}/taf` },
-    { id: 'advisory-group', icon: <Users className="h-5 w-5" />, label: 'Advisory Group', href: `/dashboard/student/${userId}/group` },
-    { id: 'feedback', icon: <Star className="h-5 w-5" />, label: 'Feedback', href: `/dashboard/student/${userId}/feedback` },
-    { id: 'notifications', icon: <Bell className="h-5 w-5" />, label: 'Notifications', href: `/dashboard/student/${userId}/notifications`, badge: unreadCount },
-  ];
+  // The student's five items come from the ONE shared source.
+  const navItems: StudentNavItem[] = navItemsFor({ role: 'student', userId }).map(
+    (item): StudentNavItem => ({
+      ...item,
+      href: item.href ?? '',
+      badge: item.id === 'notifications' ? unreadCount : undefined,
+    }),
+  );
 
   const currentUser: CurrentUser | null = initialUser;
   const loading = false;
@@ -131,7 +128,7 @@ export default function StudentSubmissionViewPage({
       <div className="flex min-h-screen items-center justify-center">
         <div className="text-center">
           <AlertCircle className="h-10 w-10 text-red-500 mx-auto mb-3" />
-          <p className="text-sm text-red-600">{error || 'Submission not found.'}</p>
+          <p className="text-sm text-red-600">{error || 'TAF has been routed.'}</p>
           <button onClick={goBack} className="mt-4 text-sm text-[#8B1A1A] hover:underline cursor-pointer">Back to group</button>
         </div>
       </div>
@@ -145,17 +142,13 @@ export default function StudentSubmissionViewPage({
           className="md:hidden flex h-9 w-9 items-center justify-center rounded-lg text-gray-500 hover:bg-gray-100">
           {mobileMenuOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
         </button>
-        <button onClick={() => setSidebarExpanded(!sidebarExpanded)}
-          className="hidden md:flex h-9 w-9 items-center justify-center rounded-lg text-gray-400 hover:bg-gray-100 hover:text-gray-600"
-          title={sidebarExpanded ? 'Collapse sidebar' : 'Expand sidebar'}>
-          {sidebarExpanded ? <ChevronLeft className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
-        </button>
         <h1 className="text-lg font-semibold text-[#333] flex-1">AIThink</h1>
         <UserMenu user={currentUser} userId={userId} routeBase="/dashboard/student" />
       </header>
 
       <div className="flex flex-1 relative">
-        <aside className={`hidden md:flex flex-col border-r bg-white transition-all duration-200 self-start sticky top-14 h-[calc(100vh-3.5rem)] overflow-y-auto ${sidebarExpanded ? 'w-56' : 'w-16'} shrink-0`}>
+        <div className="group/sidebar relative hidden shrink-0 self-start sticky top-14 h-[calc(100vh-3.5rem)] md:block">
+        <aside className={`flex h-full flex-col border-r bg-white transition-all duration-200 overflow-y-auto ${sidebarExpanded ? 'w-64' : 'w-16'} shrink-0`}>
           <nav className="flex flex-col gap-1 p-2 pt-4">
             {navItems.map((item) => (
               <button key={item.id} onClick={() => router.push(item.href)}
@@ -176,11 +169,16 @@ export default function StudentSubmissionViewPage({
             </div>
           )}
         </aside>
+          <SidebarCollapseHandle
+            expanded={sidebarExpanded}
+            onToggle={() => setSidebarExpanded((v) => !v)}
+          />
+        </div>
 
         {mobileMenuOpen && (
           <div className="fixed inset-0 z-20 md:hidden">
             <div className="absolute inset-0 bg-black/30" onClick={() => setMobileMenuOpen(false)} />
-            <aside className="absolute left-0 top-0 bottom-0 w-56 overflow-y-auto bg-white shadow-xl">
+            <aside className="absolute left-0 top-14 bottom-0 z-40 w-64 overflow-y-auto bg-white shadow-xl">
               <nav className="flex flex-col gap-1 p-3 pt-6">
                 {navItems.map((item) => (
                   <button key={item.id} onClick={() => { router.push(item.href); setMobileMenuOpen(false); }}
@@ -201,11 +199,29 @@ export default function StudentSubmissionViewPage({
         <main className="flex-1 overflow-auto">
           <div className="mx-auto max-w-6xl px-4 py-4 sm:px-6 lg:px-8">
             {/* ── Shared review content (uniform across all roles) ── */}
+            {groupArchived && (
+              <div className="mb-4 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                <ArchiveIcon className="mt-0.5 h-4 w-4 shrink-0" />
+                <span>
+                  This advisory group has been archived. You can still read the
+                  submitted TAF, but exporting and further changes are
+                  unavailable — leave the group from the Advisory Group page to
+                  join a new one.
+                </span>
+              </div>
+            )}
             <SubmissionReviewContent
               submission={submission}
+              hideExport={groupArchived}
+              /* Archived group → comments are closed too, matching the adviser
+                 and approver views of the same submission. */
+              allowComments={!groupArchived}
               editable={
                 submission.submittedBy === currentUser?.id &&
-                submission.status !== 'approved'
+                submission.status !== 'approved' &&
+                // Archived group → read-only. Editing here would be refused by
+                // the server anyway (resubmitTAF), so the fields are not opened.
+                !groupArchived
               }
               backLabel="Back to group"
               onBack={goBack}
@@ -227,7 +243,8 @@ export default function StudentSubmissionViewPage({
 
             {/* ── Unsubmit (student owner only, unless fully approved) ── */}
             {submission.submittedBy === currentUser?.id &&
-              submission.status !== 'approved' && (
+              submission.status !== 'approved' &&
+              !groupArchived && (
                 <div className="mt-2 flex justify-start">
                   <button
                     type="button"
@@ -248,20 +265,6 @@ export default function StudentSubmissionViewPage({
         </main>
       </div>
 
-      <nav className="md:hidden flex items-center justify-around border-t bg-white px-2 py-1 safe-area-bottom">
-        {navItems.map((item) => (
-          <button key={item.id} onClick={() => router.push(item.href)}
-            className={`relative flex flex-col items-center gap-0.5 px-3 py-2 rounded-lg text-xs transition-colors ${item.id === 'advisory-group' ? 'text-[#8B1A1A]' : 'text-gray-400 hover:text-gray-600'}`}>
-            {item.icon}
-            {item.badge ? (
-              <span className="absolute -top-0.5 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-red-500 text-[9px] font-bold text-white">
-                {item.badge > 9 ? '9+' : item.badge}
-              </span>
-            ) : null}
-            <span className="text-[10px]">{item.label}</span>
-          </button>
-        ))}
-      </nav>
 
       <footer className="hidden md:block bg-[#8B1A1A] text-white text-center text-xs py-3">
         <p>&copy; {new Date().getFullYear()} AIThink. All rights reserved.</p>

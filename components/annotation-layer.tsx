@@ -69,14 +69,25 @@ export default function AnnotationLayer({
   submissionId,
   children,
   enableCommentMode = true,
+  showCommentsPanel = true,
+  initialAnnotations,
+  initialUserId,
+  initialCanComment,
 }: {
   submissionId: string;
   children: React.ReactNode;
   enableCommentMode?: boolean;
+  showCommentsPanel?: boolean;
+  initialAnnotations?: Annotation[] | null;
+  initialUserId?: string | null;
+  initialCanComment?: boolean;
 }) {
-  const [annotations, setAnnotations] = useState<Annotation[]>([]);
-  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
-  const [canAnnotate, setCanAnnotate] = useState(false);
+  const seeded = useRef(initialAnnotations != null);
+  const [annotations, setAnnotations] = useState<Annotation[]>(initialAnnotations ?? []);
+  const [currentUserId, setCurrentUserId] = useState<string | null>(initialUserId ?? null);
+  const [currentUserName, setCurrentUserName] = useState<string | null>(null);
+  const [currentUserRole, setCurrentUserRole] = useState<string | null>(null);
+  const [canAnnotate, setCanAnnotate] = useState(initialCanComment ?? false);
   const [canView, setCanView] = useState(true);
   const [panelOpen, setPanelOpen] = useState(false);
   const [commentMode, setCommentMode] = useState(enableCommentMode);
@@ -93,6 +104,7 @@ export default function AnnotationLayer({
     snippet: string;
     left: number;
     top: number;
+    mobile: boolean;
   } | null>(null);
   const [draft, setDraft] = useState("");
   const [creating, setCreating] = useState(false);
@@ -115,9 +127,19 @@ export default function AnnotationLayer({
   useEffect(() => {
     let cancelled = false;
     async function init() {
-      const user = await getCurrentUser();
-      if (!cancelled) setCurrentUserId(user?.id || null);
-      if (!cancelled) await load();
+      const userPromise = getCurrentUser();
+      if (!seeded.current) void load();
+      const user = await userPromise;
+      if (cancelled) return;
+      if (user) {
+        setCurrentUserId(user.id);
+        setCurrentUserName(
+          [user.firstName, user.lastName].filter(Boolean).join(" ") || user.email || "You",
+        );
+        setCurrentUserRole(user.role);
+      } else {
+        setCurrentUserId(null);
+      }
     }
     void init();
     return () => {
@@ -160,17 +182,6 @@ useEffect(() => {
     channelRef.current = null;
   };
 }, [submissionId, load]);
-useEffect(() => {
-  function onMiss() {
-    toast.info("Showing the section instead", {
-      description:
-        "The text this comment was anchored to has changed since it was written.",
-    });
-  }
-  window.addEventListener("annotation-jump-miss", onMiss as EventListener);
-  return () =>
-    window.removeEventListener("annotation-jump-miss", onMiss as EventListener);
-}, []);
 function notifyChange() {
   try {
     channelRef.current?.send({});
@@ -184,6 +195,24 @@ function notifyChange() {
     snippet: string,
     comment: string,
   ): Promise<boolean> {
+    const tempId = `temp-${Date.now()}`;
+    const optimistic: Annotation = {
+      id: tempId,
+      submissionId,
+      fieldKey,
+      textSnippet: snippet,
+      parentId: null,
+      withRole: currentUserRole || "adviser",
+      authorId: currentUserId || "",
+      authorRole: currentUserRole || "student",
+      authorName: currentUserName || "You",
+      comment,
+      resolved: false,
+      createdAt: new Date().toISOString(),
+      replies: [],
+    };
+    setAnnotations((prev) => [...prev, optimistic]);
+
     const res = await createSubmissionAnnotation(submissionId, {
       fieldKey,
       textSnippet: snippet,
@@ -191,10 +220,11 @@ function notifyChange() {
     });
     if (res.success) {
 
-      setAnnotations((prev) => [...prev, res.annotation]);
+      setAnnotations((prev) => prev.map((a) => (a.id === tempId ? res.annotation : a)));
       notifyChange();
       return true;
     }
+    setAnnotations((prev) => prev.filter((a) => a.id !== tempId));
     toast.error(res.error);
     return false;
   }
@@ -358,9 +388,24 @@ function notifyChange() {
         snippet: text,
         left: rect ? rect.right : window.innerWidth - 220,
         top: rect ? rect.bottom + 6 : 60,
+        mobile: window.innerWidth < 640,
       });
     }
+    let touchTimer: number | undefined;
+    function handleTouchEnd(e: TouchEvent) {
+      if (
+        popoverRef.current &&
+        e.target &&
+        popoverRef.current.contains(e.target as Node)
+      ) {
+        return;
+      }
+      if (touchTimer) window.clearTimeout(touchTimer);
+      touchTimer = window.setTimeout(handleMouseUp, 40);
+    }
+
     document.addEventListener("mouseup", handleMouseUp);
+    document.addEventListener("touchend", handleTouchEnd);
     document.addEventListener("selectionchange", () => {
       const sel = window.getSelection();
       const focusedInPopover =
@@ -371,7 +416,11 @@ function notifyChange() {
         setPending(null);
       }
     });
-    return () => document.removeEventListener("mouseup", handleMouseUp);
+    return () => {
+      document.removeEventListener("mouseup", handleMouseUp);
+      document.removeEventListener("touchend", handleTouchEnd);
+      if (touchTimer) window.clearTimeout(touchTimer);
+    };
 
   }, []);
   useEffect(() => {
@@ -419,8 +468,25 @@ function notifyChange() {
       {pending && (
         <div
           ref={popoverRef}
-          className="fixed z-[60] w-72 rounded-xl border border-gray-200 bg-white p-2 shadow-2xl"
-          style={{ left: Math.min(pending.left - 272, window.innerWidth - 300), top: pending.top }}
+          className={
+            pending.mobile
+              ? "fixed inset-x-2 bottom-2 z-[60] max-h-[75dvh] overflow-y-auto rounded-xl border border-gray-200 bg-white p-2 shadow-2xl"
+              : "fixed z-[60] w-72 rounded-xl border border-gray-200 bg-white p-2 shadow-2xl"
+          }
+          style={
+            pending.mobile
+              ? undefined
+              : {
+                  left: Math.max(
+                    8,
+                    Math.min(pending.left - 272, window.innerWidth - 300),
+                  ),
+                  top: Math.min(
+                    pending.top,
+                    Math.max(8, window.innerHeight - 260),
+                  ),
+                }
+          }
         >
           <div className="flex items-center justify-between px-1 pb-1">
             <span className="text-[11px] font-semibold text-[#333] truncate">
@@ -475,7 +541,7 @@ function notifyChange() {
       {
 
 }
-      {canView && (
+      {canView && showCommentsPanel && (
         <AnnotationPanel
           open={panelOpen}
           onToggle={() => setPanelOpen((o) => !o)}

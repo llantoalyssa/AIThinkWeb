@@ -140,7 +140,7 @@ export default function SubmissionChat({
           if (!open) setHasUnread(false);
           setOpen(!open);
         }}
-        className="fixed bottom-6 right-6 z-50 flex h-12 w-12 items-center justify-center rounded-full bg-[#8B1A1A] text-white shadow-lg hover:bg-[#a32020] transition-colors"
+        className="fixed bottom-20 right-4 z-50 flex h-12 w-12 items-center justify-center rounded-full bg-[#8B1A1A] text-white shadow-lg hover:bg-[#a32020] transition-colors sm:bottom-6 sm:right-6"
         title={open ? "Close chat" : `Chat with ${other?.name || "adviser"}`}
         aria-label="Open submission chat"
       >
@@ -158,7 +158,7 @@ export default function SubmissionChat({
 
       {}
       {open && (
-        <div className="fixed bottom-20 left-4 right-4 z-50 flex h-[70vh] max-h-[480px] w-auto flex-col overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl sm:bottom-24 sm:left-auto sm:right-6 sm:h-[480px] sm:w-[360px]">
+        <div className="fixed bottom-40 left-4 right-4 z-50 flex h-[70vh] max-h-[480px] w-auto flex-col overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl sm:bottom-24 sm:left-auto sm:right-6 sm:h-[480px] sm:w-[360px]">
           {}
           <div className="flex items-center gap-3 border-b bg-[#8B1A1A] px-4 py-3 text-white">
             <div className="flex h-9 w-9 items-center justify-center rounded-full bg-white/20 text-sm font-semibold">

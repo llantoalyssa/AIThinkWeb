@@ -1,17 +1,34 @@
 'use client'
-
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { type CurrentUser } from '@/server/actions/auth'
 import { getApproverNotificationsShell } from '@/server/actions/approver-shell'
 import { UserMenu } from '@/components/user-menu'
+import { toast } from 'sonner'
+import NotificationBell from '@/components/notification-bell'
+import ApproverSidebar, {
+  approverNavItemsFor,
+  type ApproverTab,
+} from '@/components/approver-sidebar'
 import { rolePath } from '@/lib/constants'
 import {
   markNotificationsRead,
   markAllNotificationsRead,
   type ApprovalNotification,
 } from '@/server/actions/approval-workflow'
-import { Loader2, Bell, BellOff, ArrowLeft, CheckCircle2, CornerDownLeft, CheckCheck } from 'lucide-react'
+import {
+  Loader2,
+  Bell,
+  BellOff,
+  ArrowLeft,
+  CheckCircle2,
+  CornerDownLeft,
+  CheckCheck,
+  Menu,
+  X,
+  ChevronLeft,
+  ChevronRight,
+} from 'lucide-react'
 
 export default function ApproverNotificationsPage({
   role,
@@ -27,6 +44,9 @@ export default function ApproverNotificationsPage({
   const [loading, setLoading] = useState(true)
   const [notifs, setNotifs] = useState<ApprovalNotification[]>([])
   const [err, setErr] = useState<string | null>(null)
+  const [permissions, setPermissions] = useState<string[]>([])
+  const [sidebarExpanded, setSidebarExpanded] = useState(true)
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -44,17 +64,58 @@ export default function ApproverNotificationsPage({
       }
       setUser(u)
       setNotifs(shell.notifications)
+      setPermissions(shell.permissions)
       if (shell.notificationsError) setErr(shell.notificationsError)
       setLoading(false)
     }
     void load()
     return () => { cancelled = true }
   }, [router, role])
+  const navItems = approverNavItemsFor(role, user?.id ?? urlUserId, permissions)
+  function goTo(item: { tab?: string; href?: string }) {
+    if (item.href) {
+      router.push(item.href)
+      return
+    }
+    if (item.tab) router.push(`${rolePath(role)}/${urlUserId}?tab=${item.tab}`)
+  }
 
   async function openNotification(n: ApprovalNotification) {
-    const href = n.submissionId
+    if (n.groupArchived) {
+      toast.info("This advisory group has been archived", {
+        description:
+          "Its TAF is paused until the adviser unarchives the group — you can open it again after that.",
+      });
+      return;
+    }
+    const isGroupEvent =
+      !n.submissionId && (n.type === "joined_group" || n.type === "left_group");
+    let submissionHref = n.submissionId
       ? `${rolePath(role)}/${urlUserId}/submission/${n.submissionId}`
-      : `${rolePath(role)}/${urlUserId}?tab=pending`;
+      : null;
+
+    if (n.submissionId) {
+      try {
+        const { getOwnedGroupSlugForSubmission } = await import(
+          "@/server/actions/group-submissions"
+        );
+        const owned = await getOwnedGroupSlugForSubmission(n.submissionId);
+        if (owned.slug) {
+          submissionHref = `${rolePath(role)}/${urlUserId}/group/${owned.slug}/submission/${n.submissionId}`;
+        }
+      } catch {
+
+      }
+    }
+    const isFeedbackEvent = n.type === "new_feedback";
+
+    const href =
+      submissionHref ??
+      (isFeedbackEvent
+        ? `${rolePath(role)}/${urlUserId}/feedback`
+        : isGroupEvent && role !== "vcrdes"
+          ? `${rolePath(role)}/${urlUserId}?tab=groups`
+          : `${rolePath(role)}/${urlUserId}?tab=pending`);
 
     if (!n.readAt) {
       setNotifs((prev) =>
@@ -108,10 +169,46 @@ export default function ApproverNotificationsPage({
 
   return (
     <div className="min-h-screen bg-gray-50">
-      <header className="sticky top-0 z-30 flex h-14 items-center justify-between border-b bg-white px-4 shadow-sm">
-        <span className="text-lg font-semibold text-[#333]">Notifications</span>
+      <header className="sticky top-0 z-30 flex h-14 items-center gap-3 border-b bg-white px-4 shadow-sm">
+        {}
+        <button
+          onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+          aria-label="Toggle menu"
+          className="md:hidden flex h-9 w-9 items-center justify-center rounded-lg text-gray-500 hover:bg-gray-100"
+        >
+          {mobileMenuOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
+        </button>
+        <span className="flex-1 text-lg font-semibold text-[#333]">Notifications</span>
         <UserMenu user={user} userId={urlUserId} routeBase={rolePath(role)} />
       </header>
+
+      {}
+      {mobileMenuOpen && (
+        <div className="fixed inset-0 z-20 md:hidden">
+          <div
+            className="absolute inset-0 bg-black/30"
+            onClick={() => setMobileMenuOpen(false)}
+          />
+          <aside className="absolute left-0 top-14 bottom-0 z-40 w-64 overflow-y-auto bg-white shadow-xl">
+            <nav className="flex flex-col gap-1 p-3 pt-6">
+              {navItems.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => {
+                    setMobileMenuOpen(false)
+                    goTo(item)
+                  }}
+                  className="flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-700"
+                >
+                  {item.icon}
+                  <span>{item.label}</span>
+                </button>
+              ))}
+            </nav>
+          </aside>
+        </div>
+      )}
       <div className="mx-auto max-w-3xl px-4 py-6">
         <button
           onClick={onBack}
@@ -182,7 +279,7 @@ export default function ApproverNotificationsPage({
                     )}
                   </div>
                   <div className="flex-1 min-w-0">
-                    <p className={`text-sm ${n.readAt ? 'text-gray-500' : 'text-[#333] font-medium'}`}>
+                    <p className={`text-sm line-clamp-2 ${n.readAt ? 'text-gray-500' : 'text-[#333] font-medium'}`}>
                       {n.message}
                     </p>
                     <p className="text-xs text-gray-400 mt-0.5">{fmt(n.createdAt)}</p>

@@ -11,10 +11,11 @@ import {
 } from "@/server/actions/approval-workflow";
 import { rolePath, HIGH_SIMILARITY_THRESHOLD } from "@/lib/constants";
 import ApproverSidebar, {
-  APPROVER_NAV,
-  APPROVER_NAV_WITH_EXECUTIVE_SUMMARY,
+  approverNavItemsFor,
+  type ApproverTab,
 } from "@/components/approver-sidebar";
 import ResearchAnalytics from "@/components/research-analytics";
+import SupervisorAdvisoryGroups from "@/components/supervisor-advisory-groups";
 import ExecutiveSummary from "@/components/executive-summary";
 import { type AnalyticsData } from "@/server/actions/research-analytics";
 import { type ExecutiveSummaryData } from "@/server/actions/executive-summary";
@@ -46,8 +47,7 @@ const ROLE_LABEL: Record<Role, string> = {
   dean: "Dean",
   vcrdes: "VCRDES",
 };
-
-type Tab = "analytics" | "pending" | "approved" | "executive-summary";
+type Tab = ApproverTab;
 
 const STATUS_STYLES: Record<string, string> = {
   pending: "bg-amber-50 text-amber-700 border-amber-200",
@@ -69,12 +69,14 @@ export default function ApproverDashboard({ role }: { role: Role }) {
   const searchParams = useSearchParams();
   const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
   const [loading, setLoading] = useState(true);
+  const [permissions, setPermissions] = useState<string[] | undefined>(undefined);
   const requestedTab = searchParams.get("tab");
   const tab: Tab =
     requestedTab === "analytics" ||
     requestedTab === "pending" ||
     requestedTab === "approved" ||
-    requestedTab === "executive-summary"
+    requestedTab === "executive-summary" ||
+    (requestedTab === "groups" && (role === "associate_dean" || role === "dean"))
       ? (requestedTab as Tab)
       : role === "dean"
         ? "executive-summary"
@@ -88,12 +90,43 @@ export default function ApproverDashboard({ role }: { role: Role }) {
     [searchParams, router, pathname],
   );
   const isExecutiveRole = role === "dean";
-  const navItems = isExecutiveRole
-    ? APPROVER_NAV_WITH_EXECUTIVE_SUMMARY
-    : APPROVER_NAV;
+  const navItems = approverNavItemsFor(
+    role,
+    currentUser?.id ?? "",
+    permissions,
+  );
 
-  const effectiveTab: Tab =
-    tab === "executive-summary" && !isExecutiveRole ? "analytics" : tab;
+  const roleTab: Tab =
+    tab === "executive-summary" && !isExecutiveRole
+      ? "analytics"
+      : tab === "groups" && role !== "associate_dean" && role !== "dean"
+        ? "analytics"
+        : tab;
+  const TAB_PERMISSIONS: Record<Tab, string> = {
+    "executive-summary": "executive_summary.view",
+    analytics: "analytics.view",
+    pending: "approval.participate",
+    approved: "taf.approved.view",
+    groups: "groups.view",
+  };
+  const roleTabs: Tab[] = [
+    ...(isExecutiveRole ? (["executive-summary"] as Tab[]) : []),
+    "analytics",
+    "pending",
+    "approved",
+    ...(role === "associate_dean" || role === "dean"
+      ? (["groups"] as Tab[])
+      : []),
+  ];
+  const allowedTabs =
+    permissions === undefined
+      ? roleTabs
+      : roleTabs.filter((t) => permissions.includes(TAB_PERMISSIONS[t]));
+  const effectiveTab: Tab = allowedTabs.includes(roleTab)
+    ? roleTab
+    : (allowedTabs[0] ?? "analytics");
+
+  const view: Tab | null = allowedTabs.length > 0 ? effectiveTab : null;
 
   const [sidebarExpanded, setSidebarExpanded] = useState(true);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -104,6 +137,9 @@ export default function ApproverDashboard({ role }: { role: Role }) {
   const loadingApproved = false;
   const [initialNotifications, setInitialNotifications] = useState<
     ApprovalNotification[] | undefined
+  >(undefined);
+  const [initialOwnedGroupSlugs, setInitialOwnedGroupSlugs] = useState<
+    Record<string, string> | undefined
   >(undefined);
   const [initialAnalytics, setInitialAnalytics] = useState<
     AnalyticsData | null | undefined
@@ -136,8 +172,10 @@ export default function ApproverDashboard({ role }: { role: Role }) {
       setPending(shell.pending);
       setApproved(shell.approved);
       setInitialNotifications(shell.notifications);
+      setInitialOwnedGroupSlugs(shell.ownedGroupSlugs);
       setInitialAnalytics(shell.analytics);
       setInitialExecutiveSummary(shell.executiveSummary);
+      setPermissions(shell.permissions);
       setLoading(false);
     }
     void init();
@@ -318,7 +356,53 @@ export default function ApproverDashboard({ role }: { role: Role }) {
       );
     }
     return (
-      <div className="overflow-x-auto">
+      <>
+      {
+}
+      <div className="divide-y sm:hidden">
+        {rows.map((row) => (
+          <button
+            key={`m-${row.id}`}
+            type="button"
+            onClick={() => openSubmission(row.id)}
+            className="flex w-full flex-col gap-1 px-3 py-3 text-left active:bg-gray-50"
+          >
+            <div className="flex items-start justify-between gap-2">
+              <p className="line-clamp-2 flex-1 text-sm font-medium leading-snug text-[#333]">
+                {row.proposedTitle}
+              </p>
+              <span
+                className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-semibold ${
+                  row.combinedScore >= HIGH_SIMILARITY_THRESHOLD
+                    ? "bg-red-50 text-red-700"
+                    : "bg-green-50 text-green-700"
+                }`}
+              >
+                {row.combinedScore}%
+              </span>
+            </div>
+            <p className="text-xs text-gray-500">
+              {row.studentName}
+              {row.studentSrCode ? ` · ${row.studentSrCode}` : ""}
+            </p>
+            <p className="truncate text-xs text-gray-400">{row.groupName}</p>
+            <div className="mt-0.5 flex items-center justify-between gap-2">
+              <span
+                className={`inline-flex rounded-full border px-2 py-0.5 text-[11px] font-medium ${
+                  STATUS_STYLES[row.status] || "bg-gray-50 text-gray-600"
+                }`}
+              >
+                {STATUS_LABELS[row.status] || row.status}
+              </span>
+              <span className="text-[11px] text-gray-400">
+                {new Date(row.submittedAt).toLocaleDateString()}
+              </span>
+            </div>
+          </button>
+        ))}
+      </div>
+
+      <div className="hidden overflow-x-auto sm:block">
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b text-left text-xs uppercase tracking-wide text-gray-400">
@@ -378,6 +462,7 @@ export default function ApproverDashboard({ role }: { role: Role }) {
           </tbody>
         </table>
       </div>
+      </>
     );
   }
   if (loading) {
@@ -398,27 +483,28 @@ export default function ApproverDashboard({ role }: { role: Role }) {
         >
           {mobileMenuOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
         </button>
-        <button
-          onClick={() => setSidebarExpanded(!sidebarExpanded)}
-          className="hidden md:flex h-9 w-9 items-center justify-center rounded-lg text-gray-400 hover:bg-gray-100 hover:text-gray-600"
-          title={sidebarExpanded ? "Collapse sidebar" : "Expand sidebar"}
-        >
-          {sidebarExpanded ? <ChevronLeft className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
-        </button>
+
         <h1 className="text-lg font-semibold text-[#333] flex-1">AIThink</h1>
 
         {
 }
         <NotificationBell
           initialNotifications={initialNotifications}
+          initialOwnedGroupSlugs={initialOwnedGroupSlugs}
+          withOwnedGroupSlugs
           routerPush={(href) => router.push(href)}
           allHref={`${rolePath(role)}/${currentUser?.id}/notifications`}
-          hrefFor={(n) =>
+          hrefFor={(n, ctx) =>
             n.submissionId
-              ? `${rolePath(role)}/${currentUser?.id}/submission/${n.submissionId}`
+              ?
+                ctx.ownedGroupSlug
+                ? `${rolePath(role)}/${currentUser?.id}/group/${ctx.ownedGroupSlug}/submission/${n.submissionId}`
+                : `${rolePath(role)}/${currentUser?.id}/submission/${n.submissionId}`
               :
-
-                `${rolePath(role)}/${currentUser?.id}?tab=pending`
+                (n.type === "joined_group" || n.type === "left_group") &&
+                  role !== "vcrdes"
+                ? `${rolePath(role)}/${currentUser?.id}?tab=groups`
+                : `${rolePath(role)}/${currentUser?.id}?tab=pending`
           }
         />
 
@@ -438,6 +524,7 @@ export default function ApproverDashboard({ role }: { role: Role }) {
           pendingCount={pending.length}
           items={navItems}
           onSelect={setTab}
+          onToggle={() => setSidebarExpanded((v) => !v)}
         />
 
         {}
@@ -447,13 +534,14 @@ export default function ApproverDashboard({ role }: { role: Role }) {
               className="absolute inset-0 bg-black/30"
               onClick={() => setMobileMenuOpen(false)}
             />
-            <aside className="absolute left-0 top-0 bottom-0 w-56 bg-white shadow-xl">
+            <aside className="absolute left-0 top-14 bottom-0 z-40 w-64 overflow-y-auto bg-white shadow-xl">
               <nav className="flex flex-col gap-1 p-3 pt-6">
                 {navItems.map((item) => (
                   <button
                     key={item.id}
                     onClick={() => {
-                      setTab(item.tab);
+                      if (item.tab) setTab(item.tab as Tab);
+                      else if (item.href) router.push(item.href);
                       setMobileMenuOpen(false);
                     }}
                     className={`flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm transition-colors ${
@@ -478,28 +566,44 @@ export default function ApproverDashboard({ role }: { role: Role }) {
 
         {}
         <main className="flex-1 p-4 md:p-6">
-          <div className="mb-6">
-            <h2 className="text-xl font-bold text-[#333]">
-              {ROLE_TITLE[role]} Dashboard
-            </h2>
-            <p className="text-sm text-gray-500 mt-1">
-              Welcome back, {currentUser?.firstName || "User"} — review and decide
-              on submitted TAFs routed to you.
-            </p>
-          </div>
+          {}
+          {view === null && (
+            <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-gray-200 bg-white py-16 text-center">
+              <h3 className="mb-1 text-lg font-medium text-[#333]">
+                No dashboard sections available
+              </h3>
+              <p className="max-w-md text-sm text-gray-500">
+                This account has not been granted any of its role&apos;s
+                permissions. Ask a department account to grant at least one.
+              </p>
+            </div>
+          )}
 
           {}
-          {effectiveTab === "executive-summary" && isExecutiveRole && (
+          {view === "executive-summary" && isExecutiveRole && (
             <ExecutiveSummary initialData={initialExecutiveSummary} />
           )}
 
           {}
-          {effectiveTab === "analytics" && (
-            <ResearchAnalytics role={role} initialData={initialAnalytics} />
+          {view === "analytics" && (
+            <ResearchAnalytics role={role} userId={currentUser?.id ?? ""} initialData={initialAnalytics} />
           )}
 
           {}
-          {tab === "pending" && (
+          {
+}
+          {view === "groups" &&
+            (role === "associate_dean" || role === "dean") && (
+              <SupervisorAdvisoryGroups
+                role={role}
+                userId={currentUser?.id ?? ""}
+                pendingCount={pending.length}
+                userName={currentUser?.firstName}
+              />
+            )}
+
+          {}
+          {view === "pending" && (
             <div className="rounded-2xl border border-gray-200 bg-white shadow-sm overflow-hidden">
               <div className="flex items-center justify-between border-b px-4 py-3">
                 <h3 className="text-sm font-semibold text-[#333]">
@@ -518,7 +622,7 @@ export default function ApproverDashboard({ role }: { role: Role }) {
           )}
 
           {}
-          {tab === "approved" && (
+          {view === "approved" && (
             <div className="rounded-2xl border border-gray-200 bg-white shadow-sm overflow-hidden">
               <div className="flex flex-col sm:flex-row sm:items-center gap-3 border-b px-4 py-3">
                 <h3 className="text-sm font-semibold text-[#333] flex-1">

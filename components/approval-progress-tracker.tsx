@@ -66,7 +66,10 @@ export default function ApprovalProgressTracker({
 
   return (
     <>
-      <div className="w-full overflow-x-auto">
+      {
+
+}
+      <div className="w-full overflow-x-auto px-1 py-2">
         <div className="flex items-center justify-center min-w-max">
           {chain.map((step, idx) => {
             const phase = chainPhaseFor(idx);
@@ -154,6 +157,13 @@ export default function ApprovalProgressTracker({
                       <FileText className="h-2.5 w-2.5" /> note
                     </span>
                   )}
+                  {
+}
+                  {approverStep?.standIn && (
+                    <span className="mt-0.5 inline-flex items-center rounded-full border border-amber-200 bg-amber-50 px-1.5 py-px text-[9px] font-semibold uppercase tracking-wide text-amber-600">
+                      Stand-in
+                    </span>
+                  )}
                 </div>
               </div>
             );
@@ -183,6 +193,25 @@ export default function ApprovalProgressTracker({
             {selected.decidedAt && (
               <p className="text-xs text-gray-400 mb-2">
                 {new Date(selected.decidedAt).toLocaleString()}
+              </p>
+            )}
+            {
+}
+            {selected.actorName && (
+              <p className="text-xs text-gray-500 mb-3">
+                Decided by{" "}
+                <span className="font-medium text-[#333]">
+                  {selected.actorName}
+                </span>
+                {selected.actorRole && (
+                  <> ({selected.actorRole.replace("_", " ")})</>
+                )}
+                {selected.standIn && (
+                  <>
+                    {" "}
+                    — a stand-in for the {selected.role.replace("_", " ")} step
+                  </>
+                )}
               </p>
             )}
             <div

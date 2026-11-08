@@ -3,6 +3,12 @@
 import { createClient } from "@/server/supabase/server";
 import { getCurrentUser } from "./auth";
 import { logAudit } from "@/server/audit";
+import { canOwnAdvisoryGroup } from "@/lib/roles";
+import { getGrantedPermissions } from "./permissions";
+import { groupSlug } from "@/lib/slug";
+
+
+const DESCRIPTION_MAX = 200;
 
 export type AdvisoryGroup = {
   id: string;
@@ -24,7 +30,7 @@ export type UpdateAdvisoryGroupInput = {
   id: string;
   name?: string;
   description?: string;
-
+  /** Archive (set inactive) or reactivate a group. */
   isActive?: boolean;
 };
 
@@ -35,21 +41,51 @@ export type AdvisoryGroupResult =
 export type AdvisoryGroupsListResult =
   | { success: true; data: AdvisoryGroup[] }
   | { success: false; error: string };
+
+
+async function departmentBlocked(
+  role: string,
+  userId: string,
+  permission: string
+): Promise<boolean> {
+  if (role !== "department") return false;
+  try {
+    const granted = await getGrantedPermissions(userId);
+    return !granted.includes(permission);
+  } catch (error) {
+    console.error(`[advisory-groups] could not resolve ${permission}:`, error);
+    return false;
+  }
+}
+
+function departmentDeniedMessage(action: string, permission: string): string {
+  return `Your account has not been granted permission to ${action} advisory groups (${permission}). Ask a department account to grant it.`;
+}
+
+// ── Create a new advisory group ─────────────────────────────
+
 export async function createAdvisoryGroup(
   input: CreateAdvisoryGroupInput
 ): Promise<AdvisoryGroupResult> {
   const user = await getCurrentUser();
-
+  
   if (!user) {
     return { success: false, error: "You must be logged in to create an advisory group." };
   }
 
-  if (user.role !== "adviser") {
-    return { success: false, error: "Only advisers can create advisory groups." };
+  if (!canOwnAdvisoryGroup(user.role)) {
+    return { success: false, error: "Only advisers, the associate dean, the dean and the department can create advisory groups." };
+  }
+
+  // The department's half of the permission set (see departmentBlocked).
+  if (await departmentBlocked(user.role, user.id, "groups.create")) {
+    return { success: false, error: departmentDeniedMessage("create", "groups.create") };
   }
 
   const name = input.name.trim();
   const description = input.description?.trim() || null;
+
+  // Validation
   if (!name) {
     return { success: false, error: "Group name is required." };
   }
@@ -61,7 +97,8 @@ export async function createAdvisoryGroup(
   if (name.length > 100) {
     return { success: false, error: "Group name must not exceed 100 characters." };
   }
-  const DESCRIPTION_MAX = 500;
+
+  // Description is OPTIONAL — an adviser may leave it blank. Only cap it.
   if (description && description.length > DESCRIPTION_MAX) {
     return {
       success: false,
@@ -70,6 +107,22 @@ export async function createAdvisoryGroup(
   }
 
   const supabase = await createClient();
+
+
+  const { data: existingGroups } = await supabase
+    .from("advisory_groups")
+    .select("id, name")
+    .eq("adviser_id", user.id);
+
+  const clash = (existingGroups ?? []).find(
+    (g) => groupSlug(g.name as string) === groupSlug(name),
+  );
+  if (clash) {
+    return {
+      success: false,
+      error: `You already have an advisory group named "${clash.name}". Group links are built from the name, so two identical names would point at the same page — choose a different name.`,
+    };
+  }
 
   const { data, error } = await supabase
     .from("advisory_groups")
@@ -100,15 +153,24 @@ export async function createAdvisoryGroup(
     },
   };
 }
+
+// ── Get all advisory groups for the current adviser ─────────────
+
 export async function getAdviserAdvisoryGroups(): Promise<AdvisoryGroupsListResult> {
   const user = await getCurrentUser();
-
+  
   if (!user) {
     return { success: false, error: "You must be logged in to view advisory groups." };
   }
 
-  if (user.role !== "adviser") {
-    return { success: false, error: "Only advisers can view advisory groups." };
+  if (!canOwnAdvisoryGroup(user.role)) {
+    return { success: false, error: "Only advisers, the associate dean, the dean and the department can view advisory groups." };
+  }
+
+  // The department's half of the permission set (see departmentBlocked): the
+  // LIST is what the Advisory Group section and its cards are built from.
+  if (await departmentBlocked(user.role, user.id, "groups.view")) {
+    return { success: false, error: departmentDeniedMessage("view", "groups.view") };
   }
 
   const supabase = await createClient();
@@ -137,17 +199,20 @@ export async function getAdviserAdvisoryGroups(): Promise<AdvisoryGroupsListResu
 
   return { success: true, data: groups };
 }
+
+// ── Get a single advisory group by ID ───────────────────
+
 export async function getAdvisoryGroupById(
   groupId: string
 ): Promise<AdvisoryGroupResult> {
   const user = await getCurrentUser();
-
+  
   if (!user) {
     return { success: false, error: "You must be logged in to view this advisory group." };
   }
 
-  if (user.role !== "adviser") {
-    return { success: false, error: "Only advisers can view advisory groups." };
+  if (!canOwnAdvisoryGroup(user.role)) {
+    return { success: false, error: "Only advisers, the associate dean, the dean and the department can view advisory groups." };
   }
 
   const supabase = await createClient();
@@ -181,21 +246,24 @@ export async function getAdvisoryGroupById(
     },
   };
 }
+
+// ── Update an advisory group ─────────────────────────────
+
 export async function updateAdvisoryGroup(
   input: UpdateAdvisoryGroupInput
 ): Promise<AdvisoryGroupResult> {
   const user = await getCurrentUser();
-
+  
   if (!user) {
     return { success: false, error: "You must be logged in to update an advisory group." };
   }
 
-  if (user.role !== "adviser") {
-    return { success: false, error: "Only advisers can update advisory groups." };
+  if (!canOwnAdvisoryGroup(user.role)) {
+    return { success: false, error: "Only advisers, the associate dean, the dean and the department can update advisory groups." };
   }
 
   const updates: Record<string, unknown> = {};
-
+  
   if (input.name !== undefined) {
     const name = input.name.trim();
     if (!name) {
@@ -211,7 +279,16 @@ export async function updateAdvisoryGroup(
   }
 
   if (input.description !== undefined) {
-    updates.description = input.description.trim() || null;
+    const description = input.description.trim();
+    // Same 200-character budget as create: a description is a card label, not
+    // an abstract, and the edit dialog used to accept any length at all.
+    if (description.length > DESCRIPTION_MAX) {
+      return {
+        success: false,
+        error: `Description must not exceed ${DESCRIPTION_MAX} characters.`,
+      };
+    }
+    updates.description = description || null;
   }
 
   if (input.isActive !== undefined) {
@@ -250,20 +327,26 @@ export async function updateAdvisoryGroup(
     },
   };
 }
+
+// ── Delete an advisory group ─────────────────────────────
+
 export async function deleteAdvisoryGroup(
   groupId: string
 ): Promise<{ success: true } | { success: false; error: string }> {
   const user = await getCurrentUser();
-
+  
   if (!user) {
     return { success: false, error: "You must be logged in to delete an advisory group." };
   }
 
-  if (user.role !== "adviser") {
-    return { success: false, error: "Only advisers can delete advisory groups." };
+  if (!canOwnAdvisoryGroup(user.role)) {
+    return { success: false, error: "Only advisers, the associate dean, the dean and the department can delete advisory groups." };
   }
 
   const supabase = await createClient();
+
+  // Only allow deletion when NO students have joined the group. Otherwise the
+  // adviser should archive it instead (which keeps member data intact).
   const { count: memberCount, error: countErr } = await supabase
     .from("student_group_memberships")
     .select("*", { count: "exact", head: true })
@@ -278,6 +361,9 @@ export async function deleteAdvisoryGroup(
         "This group has members. You can't delete it — archive it instead (it becomes inactive and hidden from your active groups).",
     };
   }
+
+  // Read the name BEFORE deleting — once the row is gone the trail should
+  // still say what was removed.
   const { data: groupRow } = await supabase
     .from("advisory_groups")
     .select("name")
@@ -295,6 +381,8 @@ export async function deleteAdvisoryGroup(
     console.error("Error deleting advisory group:", error);
     return { success: false, error: "Failed to delete advisory group. Please try again." };
   }
+
+  // Audit trail — the group row is gone, so the name is snapshotted.
   await logAudit({
     action: "group_deleted",
     entityType: "advisory_group",
@@ -305,20 +393,25 @@ export async function deleteAdvisoryGroup(
 
   return { success: true };
 }
+
+// ── Regenerate join code for an advisory group ────────────────────────────
+
 export async function regenerateJoinCode(
   groupId: string
 ): Promise<{ success: true; newCode: string } | { success: false; error: string }> {
   const user = await getCurrentUser();
-
+  
   if (!user) {
     return { success: false, error: "You must be logged in to regenerate the join code." };
   }
 
-  if (user.role !== "adviser") {
-    return { success: false, error: "Only advisers can regenerate join codes." };
+  if (!canOwnAdvisoryGroup(user.role)) {
+    return { success: false, error: "Only advisers, the associate dean, the dean and the department can regenerate join codes." };
   }
 
   const supabase = await createClient();
+
+  // Call the database function to regenerate the code
   const { data, error } = await supabase.rpc("regenerate_group_join_code", {
     p_group_id: groupId,
   });
@@ -330,6 +423,9 @@ export async function regenerateJoinCode(
 
   return { success: true, newCode: data };
 }
+
+// ── Get total student count across all groups for the adviser ─────────
+
 export async function getAdviserTotalStudents(): Promise<
   { success: true; count: number } | { success: false; error: string }
 > {
@@ -339,8 +435,8 @@ export async function getAdviserTotalStudents(): Promise<
     return { success: false, error: "You must be logged in." };
   }
 
-  if (user.role !== "adviser") {
-    return { success: false, error: "Only advisers can view this." };
+  if (!canOwnAdvisoryGroup(user.role)) {
+    return { success: false, error: "Only advisers, the associate dean, the dean and the department can view this." };
   }
 
   const supabase = await createClient();
@@ -373,6 +469,118 @@ export async function getAdviserTotalStudents(): Promise<
 
   return { success: true, count: count ?? 0 };
 }
+
+// ── Per-group joined-student counts (for the group cards) ───────────
+
+
+export async function getGroupMemberCounts(): Promise<
+  { success: true; counts: Record<string, number> } | { success: false; error: string }
+> {
+  const user = await getCurrentUser();
+
+  if (!user) {
+    return { success: false, error: "You must be logged in." };
+  }
+
+  if (!canOwnAdvisoryGroup(user.role)) {
+    return {
+      success: false,
+      error: "Only advisers, the associate dean, the dean and the department can view this.",
+    };
+  }
+
+  const supabase = await createClient();
+
+  const { data: groups, error } = await supabase
+    .from("advisory_groups")
+    .select("id")
+    .eq("adviser_id", user.id);
+
+  if (error) {
+    console.error("Error fetching groups for member counts:", error);
+    return { success: false, error: "Failed to fetch group members." };
+  }
+
+  const ids = (groups || []).map((g) => g.id as string);
+  if (ids.length === 0) return { success: true, counts: {} };
+
+  const { data: rows, error: memberError } = await supabase
+    .from("student_group_memberships")
+    .select("group_id")
+    .in("group_id", ids);
+
+  if (memberError) {
+    console.error("Error counting group members:", memberError);
+    return { success: false, error: "Failed to count group members." };
+  }
+
+  const counts: Record<string, number> = {};
+  for (const r of (rows || []) as { group_id: string }[]) {
+    counts[r.group_id] = (counts[r.group_id] || 0) + 1;
+  }
+
+  return { success: true, counts };
+}
+
+// ── Per-group pending-TAF counts (for the group cards) ──────────────
+
+
+export async function getGroupPendingCounts(): Promise<
+  { success: true; counts: Record<string, number> } | { success: false; error: string }
+> {
+  const user = await getCurrentUser();
+
+  if (!user) {
+    return { success: false, error: "You must be logged in." };
+  }
+
+  if (!canOwnAdvisoryGroup(user.role)) {
+    return {
+      success: false,
+      error: "Only advisers, the associate dean, the dean and the department can view this.",
+    };
+  }
+
+  const supabase = await createClient();
+
+  // ACTIVE groups only: an archived group's TAFs are removed from every approval
+  // queue (see getPendingApprovals), so its dashboard card must not show a
+  // pending badge that no list backs up.
+  const { data: groups, error } = await supabase
+    .from("advisory_groups")
+    .select("id")
+    .eq("adviser_id", user.id)
+    .eq("is_active", true);
+
+  if (error) {
+    console.error("Error fetching groups for pending counts:", error);
+    return { success: false, error: "Failed to fetch group submissions." };
+  }
+
+  const ids = (groups || []).map((g) => g.id as string);
+  if (ids.length === 0) return { success: true, counts: {} };
+
+  const { data: rows, error: subError } = await supabase
+    .from("group_taf_submissions")
+    .select("group_id")
+    .in("group_id", ids)
+    .in("status", ["pending", "under_review"]);
+
+  if (subError) {
+    console.error("Error counting pending TAFs:", subError);
+    return { success: false, error: "Failed to count pending TAFs." };
+  }
+
+  const counts: Record<string, number> = {};
+  for (const r of (rows || []) as { group_id: string }[]) {
+    counts[r.group_id] = (counts[r.group_id] || 0) + 1;
+  }
+
+  return { success: true, counts };
+}
+
+// ── Get students in a group (for advisers) ──────────────────────────
+
 export type GroupStudent = {
   id: string;
   studentId: string;
@@ -380,6 +588,8 @@ export type GroupStudent = {
   lastName: string;
   middleInitial: string | null;
   srCode: string;
+  /** Uploaded profile picture (public URL) — null when the student has none. */
+  avatarUrl: string | null;
   joinedAt: string;
 };
 
@@ -396,11 +606,13 @@ export async function getAdviserGroupStudents(
     return { success: false, error: "You must be logged in." };
   }
 
-  if (user.role !== "adviser") {
-    return { success: false, error: "Only advisers can view group members." };
+  if (!canOwnAdvisoryGroup(user.role)) {
+    return { success: false, error: "Only advisers, the associate dean, the dean and the department can view group members." };
   }
 
   const supabase = await createClient();
+
+  // Verify the adviser owns this group
   const { data: group } = await supabase
     .from("advisory_groups")
     .select("id")
@@ -411,6 +623,8 @@ export async function getAdviserGroupStudents(
   if (!group) {
     return { success: false, error: "Group not found or you don't have access." };
   }
+
+  // Get members with their profile info (query separately since FK is to auth.users, not profiles)
   const { data: memberships, error } = await supabase
     .from("student_group_memberships")
     .select(`
@@ -429,16 +643,21 @@ export async function getAdviserGroupStudents(
   if (memberships.length === 0) {
     return { success: true, data: [] };
   }
+
+  // Batch-fetch profiles for the student IDs
   const studentIds = memberships.map((m) => m.student_id);
   const { data: profiles, error: profileError } = await supabase
     .from("profiles")
-    .select("id, first_name, last_name, middle_initial, sr_code")
+    .select("id, first_name, last_name, middle_initial, sr_code, avatar_url")
     .in("id", studentIds);
+
+  // Build a lookup map
   type ProfileRow = {
     first_name: string;
     last_name: string;
     middle_initial: string | null;
     sr_code: string;
+    avatar_url: string | null;
   };
   const profileMap = new Map<string, ProfileRow>(
     (profiles || []).map((p) => [p.id as string, p as unknown as ProfileRow])
@@ -454,19 +673,23 @@ export async function getAdviserGroupStudents(
       lastName: profile?.last_name || "Student",
       middleInitial: profile?.middle_initial || null,
       srCode: profile?.sr_code || "—",
+      avatarUrl: profile?.avatar_url || null,
       joinedAt: membership.joined_at,
     };
   });
 
   return { success: true, data: students };
 }
+
+// ── Join a group using join code (for students) ─────────────────────────
+
 export type JoinGroupResult =
   | { success: true; groupId: string; groupName: string; message: string }
   | { success: false; error: string };
 
 export async function joinGroupByCode(joinCode: string): Promise<JoinGroupResult> {
   const user = await getCurrentUser();
-
+  
   if (!user) {
     return { success: false, error: "You must be logged in to join a group." };
   }
@@ -476,6 +699,8 @@ export async function joinGroupByCode(joinCode: string): Promise<JoinGroupResult
   }
 
   const supabase = await createClient();
+
+  // Server-side check: student can only join one group
   const { count: existingCount, error: countError } = await supabase
     .from("student_group_memberships")
     .select("*", { count: "exact", head: true })
@@ -484,6 +709,8 @@ export async function joinGroupByCode(joinCode: string): Promise<JoinGroupResult
   if (!countError && existingCount && existingCount > 0) {
     return { success: false, error: "You can only join one advisory group. Leave your current group first." };
   }
+
+
   const { data, error } = await supabase.rpc("join_advisory_group_by_code", {
     p_join_code: joinCode.toUpperCase(),
   });
@@ -500,6 +727,8 @@ export async function joinGroupByCode(joinCode: string): Promise<JoinGroupResult
   if (!row || row.success === false || row.success === undefined) {
     return { success: false, error: row?.message || "Failed to join group. Please try again." };
   }
+
+
   try {
     const groupId = row.out_group_id as string | undefined;
     const groupName = row.group_name as string | undefined;
@@ -526,6 +755,15 @@ export async function joinGroupByCode(joinCode: string): Promise<JoinGroupResult
     console.error("[advisory-groups] Failed to notify adviser of join:", notifErr);
   }
 
+  await logAudit({
+    action: "group_joined",
+    category: "membership",
+    entityType: "advisory_group",
+    entityId: row.out_group_id as string,
+    entityLabel: (row.group_name as string) || null,
+    description: `Joined the advisory group "${row.group_name}".`,
+  });
+
   return {
     success: true,
     groupId: row.out_group_id as string,
@@ -533,6 +771,9 @@ export async function joinGroupByCode(joinCode: string): Promise<JoinGroupResult
     message: row.message as string,
   };
 }
+
+// ── Leave an advisory group (for students) ──────────────────────
+
 export async function leaveAdvisoryGroup(
   groupId: string
 ): Promise<{ success: true } | { success: false; error: string }> {
@@ -547,6 +788,8 @@ export async function leaveAdvisoryGroup(
   }
 
   const supabase = await createClient();
+
+  // Verify the student is actually a member (defense: don't delete arbitrary rows).
   const { data: membership } = await supabase
     .from("student_group_memberships")
     .select("id, group_id")
@@ -557,6 +800,8 @@ export async function leaveAdvisoryGroup(
   if (!membership) {
     return { success: false, error: "You are not a member of this group." };
   }
+
+  // Remove the membership row (RLS allows a student to delete their own row).
   const { error } = await supabase
     .from("student_group_memberships")
     .delete()
@@ -566,6 +811,8 @@ export async function leaveAdvisoryGroup(
     console.error("[advisory-groups] Error leaving group:", error);
     return { success: false, error: "Failed to leave the group. Please try again." };
   }
+
+  // Audit trail: a student leaving an advisory group.
   await logAudit({
     action: "student_left_group",
     entityType: "advisory_group",
@@ -573,6 +820,8 @@ export async function leaveAdvisoryGroup(
     description: "Left the advisory group.",
     metadata: { membershipId: membership.id },
   });
+
+  // Notify the group's adviser that the student left (best-effort).
   try {
     const { data: group } = await supabase
       .from("advisory_groups")
@@ -598,6 +847,9 @@ export async function leaveAdvisoryGroup(
 
   return { success: true };
 }
+
+// ── Remove a student from an advisory group (for advisers) ─────────────
+
 export async function removeStudentFromGroup(
   groupId: string,
   studentId: string
@@ -608,11 +860,13 @@ export async function removeStudentFromGroup(
     return { success: false, error: "You must be logged in." };
   }
 
-  if (user.role !== "adviser") {
-    return { success: false, error: "Only advisers can remove students from a group." };
+  if (!canOwnAdvisoryGroup(user.role)) {
+    return { success: false, error: "Only advisers, the associate dean, the dean and the department can remove students from a group." };
   }
 
   const supabase = await createClient();
+
+  // Verify the adviser owns this group before touching anything.
   const { data: group } = await supabase
     .from("advisory_groups")
     .select("id, name")
@@ -623,6 +877,8 @@ export async function removeStudentFromGroup(
   if (!group) {
     return { success: false, error: "Group not found or you don't have access." };
   }
+
+  // Confirm the membership exists so a stale UI click can't report success.
   const { data: membership } = await supabase
     .from("student_group_memberships")
     .select("id")
@@ -633,6 +889,8 @@ export async function removeStudentFromGroup(
   if (!membership) {
     return { success: false, error: "That student is not in this group." };
   }
+
+
   const { data: profile } = await supabase
     .from("profiles")
     .select("first_name, last_name")
@@ -654,6 +912,7 @@ export async function removeStudentFromGroup(
       error: "Failed to remove the student. Please try again.",
     };
   }
+
   try {
     await supabase.from("approval_notifications").insert({
       user_id: studentId,
@@ -667,14 +926,30 @@ export async function removeStudentFromGroup(
     console.error("[advisory-groups] Failed to notify student of removal:", notifErr);
   }
 
+  await logAudit({
+    action: "student_removed_from_group",
+    category: "membership",
+    entityType: "advisory_group",
+    entityId: groupId,
+    entityLabel: (group as { name?: string }).name || null,
+    description: `Removed ${studentName} from the advisory group "${
+      (group as { name?: string }).name ?? ""
+    }".`,
+  });
+
   return { success: true, studentName };
 }
+
+// ── Get all groups the current student has joined ─────────────────────────
+
 export type StudentGroupMembership = {
   id: string;
   groupId: string;
   groupName: string;
   groupDescription: string | null;
   joinCode: string;
+
+  isActive: boolean;
   joinedAt: string;
   adviserId: string;
 };
@@ -706,7 +981,8 @@ export async function getStudentJoinedGroups(): Promise<StudentGroupsResult> {
         name,
         description,
         join_code,
-        adviser_id
+        adviser_id,
+        is_active
       )
     `)
     .eq("student_id", user.id)
@@ -725,19 +1001,27 @@ export async function getStudentJoinedGroups(): Promise<StudentGroupsResult> {
     joinCode: (membership.advisory_groups as unknown as { join_code: string }).join_code,
     joinedAt: membership.joined_at,
     adviserId: (membership.advisory_groups as unknown as { adviser_id: string }).adviser_id,
+    isActive: (membership.advisory_groups as unknown as { is_active: boolean }).is_active,
   }));
 
   return { success: true, data: groups };
 }
+
+// ── Get group detail for a student (by group ID, only if they're a member) ─
+
 export type StudentGroupDetailResult =
   | { success: true; data: StudentGroupMembership & { adviserName: string; memberCount: number } }
   | { success: false; error: string };
+
+// ── Slugify helper ─────────────────────────────────────────
 function slugify(name: string): string {
   return name
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/(^-|-$)/g, '');
 }
+
+// ── Get advisory group by slug (for adviser) ─────────────────
 export async function getAdviserGroupBySlug(
   slug: string
 ): Promise<AdvisoryGroupResult> {
@@ -747,11 +1031,18 @@ export async function getAdviserGroupBySlug(
     return { success: false, error: "You must be logged in." };
   }
 
-  if (user.role !== "adviser") {
-    return { success: false, error: "Only advisers can access this." };
+  if (!canOwnAdvisoryGroup(user.role)) {
+    return { success: false, error: "Only advisers, the associate dean, the dean and the department can access this." };
+  }
+
+
+  if (await departmentBlocked(user.role, user.id, "groups.view")) {
+    return { success: false, error: departmentDeniedMessage("view", "groups.view") };
   }
 
   const supabase = await createClient();
+
+  // Fetch all groups for this adviser and match by slugified name
   const { data, error } = await supabase
     .from("advisory_groups")
     .select("*")
@@ -782,6 +1073,8 @@ export async function getAdviserGroupBySlug(
     },
   };
 }
+
+// ── Get group detail by slug (for student) ─────────────────
 export async function getStudentGroupBySlug(
   slug: string
 ): Promise<StudentGroupDetailResult> {
@@ -794,6 +1087,8 @@ export async function getStudentGroupBySlug(
   if (user.role !== "student") {
     return { success: false, error: "Only students can access this." };
   }
+
+  // Get all joined groups and find the one with matching slug
   const groupsResult = await getStudentJoinedGroups();
   if (!groupsResult.success) {
     return { success: false, error: groupsResult.error };
@@ -803,8 +1098,13 @@ export async function getStudentGroupBySlug(
   if (!match) {
     return { success: false, error: "Group not found." };
   }
+
+  // Use existing detail loader with the group ID
   return await getStudentGroupDetail(match.groupId);
 }
+
+// ── Get group detail for a student (by group ID, only if they're a member) ─
+
 export async function getStudentGroupDetail(
   groupId: string
 ): Promise<StudentGroupDetailResult> {
@@ -819,6 +1119,8 @@ export async function getStudentGroupDetail(
   }
 
   const supabase = await createClient();
+
+  // Verify the student is a member of this group
   const { data: membership, error: membershipError } = await supabase
     .from("student_group_memberships")
     .select(`
@@ -829,7 +1131,8 @@ export async function getStudentGroupDetail(
         name,
         description,
         join_code,
-        adviser_id
+        adviser_id,
+        is_active
       )
     `)
     .eq("student_id", user.id)
@@ -845,7 +1148,10 @@ export async function getStudentGroupDetail(
     description: string | null;
     join_code: string;
     adviser_id: string;
+    is_active: boolean;
   };
+
+  // Get adviser name from profiles, fall back to auth metadata
   let adviserName = "Unknown Adviser";
   const { data: adviserProfile, error: profileErr } = await supabase
     .from("profiles")
@@ -856,7 +1162,7 @@ export async function getStudentGroupDetail(
   if (adviserProfile) {
     adviserName = `${adviserProfile.first_name} ${adviserProfile.last_name}`.trim();
   } else {
-
+    // Fallback: look up auth user metadata via RPC
     const { data: displayName } = await supabase.rpc("get_user_display_name", {
       user_id: groupData.adviser_id,
     });
@@ -864,6 +1170,8 @@ export async function getStudentGroupDetail(
       adviserName = displayName;
     }
   }
+
+  // Get member count (use RPC to bypass RLS)
   const { data: memberCount } = await supabase
     .rpc("get_group_member_count", { p_group_id: groupId });
   const count = (typeof memberCount === "number") ? memberCount : 0;
@@ -878,11 +1186,14 @@ export async function getStudentGroupDetail(
       joinCode: groupData.join_code,
       joinedAt: membership.joined_at,
       adviserId: groupData.adviser_id,
+      isActive: groupData.is_active,
       adviserName,
       memberCount: count,
     },
   };
 }
+
+
 export type StudentGroupMember = {
   id: string;
   studentId: string;
