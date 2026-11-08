@@ -1,3 +1,5 @@
+
+
 import { redirect } from "next/navigation";
 
 import ApproverPageFrame, {
@@ -19,14 +21,14 @@ export default async function AdviserAnalyticsPage({
   if (!shell.success) redirect("/login");
 
   const { user, permissions } = shell;
-
+  // Another role's page, or someone else's id in the URL → the caller's home.
   if (user.role !== "adviser" || (id && user.id !== id)) {
     redirect(`${rolePath(user.role)}/${user.id}`);
   }
 
   const base = `${rolePath("adviser")}/${id}`;
   const canView = permissions.includes("analytics.view");
-
+  // Not queried at all without the grant — and the action refuses it anyway.
   const result = canView ? await getResearchAnalytics() : null;
 
   return (

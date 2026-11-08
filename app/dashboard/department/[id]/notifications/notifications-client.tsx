@@ -56,6 +56,8 @@ export default function DepartmentNotificationsPage({
   const [sidebarExpanded, setSidebarExpanded] = useState(true);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
+  // Clamp during render — never reset the page inside an effect
+  // (set-state-in-effect is a build-failing lint error in this project).
   const notifsTotalPages = Math.max(
     1,
     Math.ceil(notifs.length / NOTIFS_PER_PAGE),
@@ -72,7 +74,6 @@ export default function DepartmentNotificationsPage({
     permissions: initialPermissions,
   });
   const allHref = departmentNotificationsHref(userId);
-
   function markOneRead(n: ApprovalNotification) {
     setNotifs((prev) =>
       prev.map((x) => (x.id === n.id ? { ...x, readAt: new Date().toISOString() } : x)),

@@ -35,6 +35,8 @@ export default async function AssociateDeanAuditTrail({
   const basePath = `${rolePath("associate_dean")}/${id}/audit-trail`;
   const backHref = `${rolePath("associate_dean")}/${id}`;
 
+  // Not queried at all without the grant: an ungranted account must never cause
+  // a read of audit_logs, even one RLS would only filter to zero rows.
   const { filters, query } = auditSearchFromParams(sp);
   const result = canView ? await getAuditLogs(query) : null;
 

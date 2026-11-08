@@ -1,3 +1,4 @@
+
 import { redirect } from "next/navigation";
 
 import { getApproverPageShell } from "@/server/actions/approver-shell";
@@ -24,7 +25,7 @@ export default async function DeanAuditTrail({
   if (!shell.success) redirect("/login");
 
   const { user, permissions } = shell;
-
+  // Another role's page, or someone else's id in the URL → the caller's own home.
   if (user.role !== "dean" || (id && user.id !== id)) {
     redirect(`${rolePath(user.role)}/${user.id}`);
   }
@@ -32,6 +33,9 @@ export default async function DeanAuditTrail({
   const canView = permissions.includes("pages.audit");
   const basePath = `${rolePath("dean")}/${id}/audit-trail`;
   const backHref = `${rolePath("dean")}/${id}`;
+
+  // Not queried at all without the grant: an ungranted account must never cause
+  // a read of audit_logs, even one RLS would only filter to zero rows.
   const { filters, query } = auditSearchFromParams(sp);
   const result = canView ? await getAuditLogs(query) : null;
 

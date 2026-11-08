@@ -1,3 +1,5 @@
+
+
 import { redirect } from "next/navigation";
 import { Eye } from "lucide-react";
 
@@ -18,12 +20,14 @@ export default async function AssociateDeanJournals({
   if (!shell.success) redirect("/login");
 
   const { user, permissions } = shell;
-
+  // Another role's page, or someone else's id in the URL → the caller's own home.
   if (user.role !== "associate_dean" || (id && user.id !== id)) {
     redirect(`${rolePath(user.role)}/${user.id}`);
   }
 
   const canView = permissions.includes("pages.journals");
+  // Granted, not hardcoded: `journals.manage` is department-only, so this is
+  // false for every approver — and stays right if this route is ever reused.
   const canManage = permissions.includes("journals.manage");
   const backHref = `${rolePath("associate_dean")}/${id}`;
   const journals = canView ? await getAllJournals() : null;

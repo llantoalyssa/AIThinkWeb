@@ -12,12 +12,19 @@ import { UserMenu } from '@/components/user-menu'
 import { toast } from 'sonner'
 import { navItemsFor, type NavItem } from '@/components/nav-items'
 import { Loader2, Star, Menu, X, ChevronLeft, ChevronRight } from 'lucide-react'
+
+/** Student nav items come from the ONE shared source (components/nav-items.tsx).
+ *  Two things stay caller-side by design: the unread NOTIFICATIONS badge
+ *  (wiring keyed on item.id) and the href, which studentItems() always sets. */
 type StudentNavItem = NavItem & { href: string; badge?: number }
 
 type Props = {
+  /** Supplied by the SERVER (see page.tsx): identity, the notification badge
+   *  and the sidebar recents. This page used to fire three queued server
+   *  actions on mount; it now fires none. */
   initialUser: CurrentUser;
   initialUnreadCount: number;
-
+  /** Absent when the server fetch failed — the child then loads its own. */
   initialRecents?: RecentTAFEntry[];
 };
 
@@ -30,6 +37,8 @@ export default function StudentFeedbackPage({
   const params = useParams<{ id: string }>()
   const userId = params.id
   const unreadCount = useUnreadNotifications(userId, initialUnreadCount)
+
+  // The student's five items come from the ONE shared source.
   const navItems: StudentNavItem[] = navItemsFor({ role: 'student', userId }).map(
     (item): StudentNavItem => ({
       ...item,
@@ -47,11 +56,15 @@ export default function StudentFeedbackPage({
   const [hoverRating, setHoverRating] = useState(0)
   const [description, setDescription] = useState('')
   const [submitting, setSubmitting] = useState(false)
+
+  // Identity and the role/URL-id guards now live in page.tsx (server) and run
+  // before this component renders — no auth round trip here any more.
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     if (rating < 1) { toast.error('Please select a rating.'); return }
     const comment = description.trim()
-
+    // Comment is OPTIONAL, but if provided it must be at least 10 characters.
     if (comment && comment.length < 10) { toast.error('Your feedback must be at least 10 characters.'); return }
     setSubmitting(true)
     const res = await submitFeedback({ rating, description: comment })
@@ -85,7 +98,7 @@ export default function StudentFeedbackPage({
       </header>
 
       <div className="flex flex-1 relative">
-        {}
+        {/* Desktop sidebar */}
         <div className="group/sidebar relative hidden shrink-0 self-start sticky top-14 h-[calc(100vh-3.5rem)] md:block">
         <aside className={`flex h-full flex-col border-r bg-white transition-all duration-200 overflow-y-auto ${sidebarExpanded ? 'w-64' : 'w-16'} shrink-0`}>
           <nav className="flex flex-col gap-1 p-2 pt-4">
@@ -113,7 +126,7 @@ export default function StudentFeedbackPage({
           />
         </div>
 
-        {}
+        {/* Mobile drawer */}
         {mobileMenuOpen && (
           <div className="fixed inset-0 z-20 md:hidden">
             <div className="absolute inset-0 bg-black/30" onClick={() => setMobileMenuOpen(false)} />
@@ -145,7 +158,7 @@ export default function StudentFeedbackPage({
             </div>
 
             <form onSubmit={handleSubmit} className="rounded-2xl border border-gray-200 bg-white p-6 shadow-sm space-y-5">
-              {}
+              {/* Rating */}
               <div>
                 <label className="mb-2 block text-sm font-medium text-[#333]">How would you rate the system?</label>
                 <div className="flex items-center gap-1">
@@ -170,7 +183,7 @@ export default function StudentFeedbackPage({
                 </p>
               </div>
 
-              {}
+              {/* Description */}
               <div>
                 <label htmlFor="feedback-desc" className="mb-1 block text-sm font-medium text-[#333]">
                   Your feedback <span className="text-xs font-normal text-gray-400">(optional · min 10 characters)</span>
@@ -201,6 +214,8 @@ export default function StudentFeedbackPage({
           </div>
         </main>
       </div>
+
+
       <footer className="hidden md:block bg-[#8B1A1A] text-white text-center text-xs py-3">
         <p>&copy; {new Date().getFullYear()} AIThink. All rights reserved.</p>
       </footer>

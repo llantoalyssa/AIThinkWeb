@@ -1,3 +1,5 @@
+
+
 import { redirect } from "next/navigation";
 import {
   Activity,
@@ -32,7 +34,11 @@ const EXEC_ROLE_LABELS: Record<string, string> = {
   vcrdes: "VCRDES",
 };
 
-
+/**
+ * Every timestamp on this page is shown in PHILIPPINE time (UTC+8), regardless
+ * of the server's own timezone — Vercel runs in UTC, so a bare toLocaleString()
+ * displayed sign-ins 8 hours behind what the office sees on their clock.
+ */
 const PH_TZ = "Asia/Manila";
 function manilaTime(iso: string | null | undefined): string {
   if (!iso) return "—";

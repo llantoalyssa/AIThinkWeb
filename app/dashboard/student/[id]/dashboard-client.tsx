@@ -39,13 +39,21 @@ import {
   BookOpen,
   UserCheck,
 } from 'lucide-react'
+
+/** Student nav items come from the ONE shared source (components/nav-items.tsx).
+ *  Two things stay caller-side by design: the unread NOTIFICATIONS badge
+ *  (wiring keyed on item.id) and the href, which studentItems() always sets. */
 type StudentNavItem = NavItem & { href: string; badge?: number };
 
 type Props = {
+  /** Supplied by the SERVER (see page.tsx): identity, the notification badge,
+   *  advisory-group membership, the sidebar recents and the stats dashboard
+   *  data. Passing them down means this page fires ZERO data round trips on
+   *  mount — everything arrives with the RSC payload. */
   initialUser: CurrentUser;
   initialUnreadCount: number;
   initialHasGroup: boolean;
-
+  /** Absent when the server fetch failed — the child then loads its own. */
   initialRecents?: RecentTAFEntry[];
   initialDashboardData: StudentDashboardData | null;
 };
@@ -61,7 +69,12 @@ export default function StudentDashboardPage({
   const pathname = usePathname();
   const params = useParams<{ id: string }>();
   const urlUserId = params.id;
+
+  // Unread notifications count (badge on the Notifications nav item).
   const [unreadCount, setUnreadCount] = useState(initialUnreadCount);
+
+  // The student's five items come from the ONE shared source — this page used
+  // to keep its own copy, which is how an item added elsewhere went missing here.
   const navItems: StudentNavItem[] = navItemsFor({ role: 'student', userId: urlUserId }).map(
     (item): StudentNavItem => ({
       ...item,
@@ -69,8 +82,14 @@ export default function StudentDashboardPage({
       badge: item.id === 'notifications' ? unreadCount : undefined,
     }),
   );
+
+  // Identity comes from the server (page.tsx already ran the role and URL-id
+  // guards), so there is nothing to load here.
   const currentUser: CurrentUser | null = initialUser;
   const loading = false;
+
+  // Refresh the unread notification count (re-reads on demand so the
+  // sidebar badge clears once notifications are read elsewhere).
   const refreshUnreadCount = useCallback(async () => {
     if (urlUserId !== currentUser?.id) return;
     const nr = await getMyNotifications();
@@ -78,11 +97,19 @@ export default function StudentDashboardPage({
       setUnreadCount(nr.data.filter((n) => !n.readAt).length);
     }
   }, [urlUserId, currentUser?.id]);
+
+  // Re-sync the badge when the window regains focus (e.g. the student
+  // navigates to the Notifications page, reads items, then comes back).
   useEffect(() => {
     function onFocus() { void refreshUnreadCount(); }
     window.addEventListener('focus', onFocus);
     return () => window.removeEventListener('focus', onFocus);
   }, [refreshUnreadCount]);
+
+  // Also refresh the badge whenever this page becomes the active route again
+  // via client-side navigation. The FIRST run is skipped: init() already
+  // returned a fresh unread count, and firing a second getMyNotifications()
+  // here cost a whole extra round trip on every single visit to the dashboard.
   const badgeSyncedRef = useRef(false);
   useEffect(() => {
     const isDashboard = pathname === `/dashboard/student/${urlUserId}`;
@@ -94,27 +121,47 @@ export default function StudentDashboardPage({
     const t = setTimeout(() => { void refreshUnreadCount(); }, 0);
     return () => clearTimeout(t);
   }, [pathname, urlUserId, refreshUnreadCount]);
+
+  // Refresh instantly when any surface marks notifications read (the bell, the
+  // notifications page, "Mark all as read", etc.) so the badge decrements the
+  // moment the user acts — no need to wait for route change/focus.
   useEffect(() => {
     function onRead() { void refreshUnreadCount(); }
     window.addEventListener('aithink-notifications-read', onRead);
     return () => window.removeEventListener('aithink-notifications-read', onRead);
   }, [refreshUnreadCount]);
+
+  // ── Groups state ────────────────────────────────────────────────────
   const [hasGroup, setHasGroup] = useState<boolean | null>(initialHasGroup);
   const checkingGroup = false;
+
+  // ── Join dialog state ────────────────────────────────────────────────
   const [showJoinDialog, setShowJoinDialog] = useState(false);
   const [joinCode, setJoinCode] = useState('');
   const [joining, setJoining] = useState(false);
   const [joinError, setJoinError] = useState<string | null>(null);
+
+  // ── UI state ─────────────────────────────────────────────────────────
   const [signingOut, setSigningOut] = useState(false);
   const [sidebarExpanded, setSidebarExpanded] = useState(true);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const userMenuRef = useRef<HTMLDivElement>(null);
+
+  // ── One-time join dialog ─────────────────────────────────────────────
+  // Identity/role/URL-id checks and the group-membership lookup now happen on
+  // the SERVER (see page.tsx) before this component renders, so the only thing
+  // left to do here is the browser-local "have they seen this dialog" check.
   useEffect(() => {
     if (!initialHasGroup && !window.localStorage.getItem('aithink_join_group_seen')) {
+      // The flag lives in localStorage, which the server cannot read, so this
+      // has to be decided after mount — there is no hydration-safe alternative.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setShowJoinDialog(true);
     }
   }, [initialHasGroup]);
+
+  // ── Close menus ──────────────────────────────────────────────────────
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
       if (userMenuRef.current && !userMenuRef.current.contains(e.target as Node)) {
@@ -132,12 +179,17 @@ export default function StudentDashboardPage({
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
   }, []);
+
+  // ── Handlers ─────────────────────────────────────────────────────────
   async function handleLogout() {
     setSigningOut(true);
+    // The SERVER action, not the browser client: logout() writes the audit row
+    // BEFORE clearing the session. Signing out from the browser skipped the
+    // audit trail entirely, which is why student sign-outs were never recorded.
     const result = await logout();
     if (!result.success) {
       console.error('Logout error:', result.error);
-
+      // Never trap the user in a signed-in state because auditing failed.
       const supabase = await import('@/server/supabase/client').then((m) =>
         m.createClient()
       );
@@ -173,6 +225,8 @@ export default function StudentDashboardPage({
       setShowJoinDialog(false);
       setHasGroup(true);
       setJoinCode('');
+      // Navigate straight to the Advisory Group page so the joined group
+      // reflects immediately (no reload needed).
       router.push(`/dashboard/student/${urlUserId}/group`);
     } else {
       setJoinError(result.error);
@@ -183,6 +237,8 @@ export default function StudentDashboardPage({
     window.localStorage.setItem('aithink_join_group_seen', '1');
     setShowJoinDialog(false);
   }
+
+  // ── Derived values ───────────────────────────────────────────────────
   const firstName = currentUser?.firstName || '';
   const lastName = currentUser?.lastName || '';
   const middleInitial = currentUser?.middleInitial || '';
@@ -192,6 +248,8 @@ export default function StudentDashboardPage({
   const displayName = formatName({ firstName, middleInitial, lastName, suffix });
   const greeting = firstName || 'Student';
   const userInitials = (firstName.charAt(0) + lastName.charAt(0)).toUpperCase() || 'S';
+
+  // ── Loading screen ───────────────────────────────────────────────────
   if (loading || checkingGroup) {
     return (
       <div className="flex min-h-screen items-center justify-center">
@@ -199,11 +257,16 @@ export default function StudentDashboardPage({
       </div>
     );
   }
+
+  // ══════════════════════════════════════════════════════════════════════
+  // MAIN LAYOUT
+  // ══════════════════════════════════════════════════════════════════════
+
   return (
     <div className="flex min-h-screen flex-col bg-gray-50/50">
-      {}
+      {/* ── Header ─────────────────────────────────────────────────── */}
       <header className="sticky top-0 z-30 flex h-14 items-center gap-3 border-b bg-white px-4 shadow-sm">
-        {}
+        {/* Mobile menu toggle */}
         <button
           onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
           className="md:hidden flex h-9 w-9 items-center justify-center rounded-lg text-gray-500 hover:bg-gray-100"
@@ -211,7 +274,7 @@ export default function StudentDashboardPage({
           {mobileMenuOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
         </button>
 
-        {}
+        {/* Logo — AIThink wordmark (avatar/initials live in the user menu top-right) */}
         <button
           onClick={() => router.push(`/dashboard/student/${urlUserId}`)}
           className="flex items-center gap-2 cursor-pointer"
@@ -220,12 +283,16 @@ export default function StudentDashboardPage({
           <span className="text-lg font-semibold text-[#333]">AIThink</span>
         </button>
 
-        {
-}
+        {/* flex-1 at EVERY width: with `hidden sm:block` the spacer vanished on
+            phones, so the avatar sat next to the wordmark (visually centred)
+            instead of pinned top-right — the TAF page always had it, which is
+            why the two pages disagreed. */}
         <div className="flex-1" />
 
-        {
-}
+        {/* Notification bell — the only entry point to notifications for a
+            student (the side-nav item was removed for every role). It sits with
+            the user menu on the RIGHT, exactly like the approver and department
+            headers; placed before the spacer it drifted to the left of centre. */}
         <NotificationBell
           routerPush={(href) => router.push(href)}
           allHref={`/dashboard/student/${urlUserId}/notifications`}
@@ -236,7 +303,7 @@ export default function StudentDashboardPage({
           }
         />
 
-        {}
+        {/* User menu */}
         <div className="relative" ref={userMenuRef}>
           <button
             onClick={() => setUserMenuOpen(!userMenuOpen)}
@@ -252,7 +319,7 @@ export default function StudentDashboardPage({
 
           {userMenuOpen && (
             <div className="absolute right-0 top-12 w-56 rounded-lg border bg-white shadow-lg z-50">
-              {}
+              {/* Clicking your info navigates to the profile page */}
               <button
                 onClick={() => {
                   setUserMenuOpen(false);
@@ -296,7 +363,7 @@ export default function StudentDashboardPage({
       </header>
 
       <div className="flex flex-1 relative">
-        {}
+        {/* ── Desktop sidebar ─────────────────────────────────────── */}
         <div className="group/sidebar relative hidden shrink-0 self-start sticky top-14 h-[calc(100vh-3.5rem)] md:block">
         <aside
           className={`flex h-full flex-col border-r bg-white transition-all duration-200 overflow-y-auto ${
@@ -326,7 +393,7 @@ export default function StudentDashboardPage({
               </Link>
             ))}
           </nav>
-          {}
+          {/* Recents section — only visible when sidebar is expanded */}
           {sidebarExpanded && (
             <div className="flex-1 min-h-0 overflow-hidden border-t border-gray-100 mt-2 pt-1">
               <RecentTafs userId={urlUserId} initialEntries={initialRecents} />
@@ -339,7 +406,7 @@ export default function StudentDashboardPage({
           />
         </div>
 
-        {}
+        {/* ── Mobile overlay drawer ────────────────────────────────── */}
         {mobileMenuOpen && (
           <div className="fixed inset-0 z-20 md:hidden">
             <div
@@ -374,10 +441,10 @@ export default function StudentDashboardPage({
           </div>
         )}
 
-        {}
+        {/* ── Main content ─────────────────────────────────────────── */}
         <main className="flex-1 overflow-auto">
           <div className="mx-auto max-w-6xl px-4 py-6 sm:px-6 lg:px-8">
-            {}
+            {/* Welcome banner */}
             <div className="mb-6 sm:mb-8">
               <h1 className="text-xl sm:text-2xl font-bold text-[#333]">
                 Welcome back, {greeting}!
@@ -387,7 +454,7 @@ export default function StudentDashboardPage({
               </p>
             </div>
 
-            {}
+            {/* No-group banner */}
             {!hasGroup && (
               <Card className="mb-6 border-2 border-dashed border-amber-200 bg-amber-50/40">
                 <CardContent className="flex flex-col sm:flex-row items-center justify-between gap-4 py-5">
@@ -415,7 +482,7 @@ export default function StudentDashboardPage({
               </Card>
             )}
 
-            {}
+            {/* User info cards */}
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-4 mb-6 sm:mb-8">
               <Card>
                 <CardHeader className="flex flex-row items-center gap-3 pb-2">
@@ -466,17 +533,19 @@ export default function StudentDashboardPage({
               </Card>
             </div>
 
-            {}
+            {/* ── Stats dashboard (2-column) ─────────────── */}
             <StudentStatsDashboard userId={urlUserId} initialData={initialDashboardData ?? undefined} />
           </div>
         </main>
       </div>
-      {}
+
+
+      {/* ── Footer ──────────────────────────────────────────────────── */}
       <footer className="hidden md:block bg-[#8B1A1A] text-white text-center text-xs py-3">
         <p>&copy; {new Date().getFullYear()} AIThink. All rights reserved.</p>
       </footer>
 
-      {}
+      {/* ── Join Group Dialog ──────────────────────────────────────── */}
       <Dialog
         open={showJoinDialog}
         onOpenChange={(open) => {

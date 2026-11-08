@@ -1,5 +1,8 @@
 "use client";
 
+// Notifications are surfaced as the badge beside the user menu (top-right),
+// handled inside ProfileSettingsPage — not as a side-nav item.
+
 import { ClipboardList, BarChart3, Inbox, CheckCircle2, FolderOpen } from "lucide-react";
 import { useParams } from "next/navigation";
 import { ProfileSettingsPage } from "@/components/profile-settings";

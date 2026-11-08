@@ -1,3 +1,5 @@
+
+
 import { redirect } from "next/navigation";
 import { getAdviserGroupData } from "@/server/actions/adviser-shell";
 import { rolePath } from "@/lib/constants";
@@ -6,7 +8,7 @@ import AdvisoryGroupDetailPage from "../../../../adviser/[id]/group/[slug]/group
 export default async function AssociateDeanGroupDetailPage({
   params,
 }: {
-
+  // Next 15: route params are async.
   params: Promise<{ id: string; slug: string }>;
 }) {
   const { id, slug } = await params;
