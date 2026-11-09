@@ -27,7 +27,7 @@ The final verdict is a single comparison:
 
 ```
 combined ≥ 25  →  high_similarity   ("may need revisions")
-combined < 25  →  low_similarity    ("sufficiently original")
+combined < 25  →  low_similarity    ("low detected overlap within the searched sources")
 ```
 
 `HIGH_SIMILARITY_THRESHOLD = 25` — deliberately low on a 0–100 scale because the number is
@@ -258,8 +258,9 @@ Worked (3 internal matches, calibrated 30.55 / 18.20 / 9.75, weights 0.50 / 0.31
 15.28 + 5.69 + 1.83 = 22.80
 ```
 
-If either side has no matches at all, that side contributes **0** — and because external
-carries 60%, a failed Scholar call silently caps the maximum achievable score at 40.
+If either side has no matches after a successful search, that side contributes **0**.
+Unavailable retrieval or failed scoring is stored separately and makes the analysis
+incomplete; it cannot clear a proposal as though the zero were valid evidence.
 
 ---
 
@@ -277,14 +278,14 @@ different from.
 |---|---|---|---|---|
 | A | 22.80 | 18.40 | `9.12 + 11.04 = 20.16` | **Low** |
 | B | 30.00 | 28.00 | `12.00 + 16.80 = 28.80` | **High** |
-| C (Scholar failed) | 40.00 | 0.00 | `16.00` | **Low** — even a perfect internal match cannot exceed 40 |
+| C (no Scholar matches) | 40.00 | 0.00 | `16.00` | **Low SBERT judgment; evidence review determines the next action** |
 
 `round2()` is applied to the stored score; the comparison to the threshold uses the
 unrounded value.
 
 ---
 
-## 8. The AI layer (narrative, never the score)
+## 8. AI layers (never the score)
 
 `server/analysis/ai-analysis.ts`
 
@@ -300,6 +301,22 @@ DeepSeek (`temperature 0.2`, `max_tokens 16 000`, `response_format: json_object`
 
 **On a low-similarity result** the enhancement and recommendations are cleared before
 storage: there is nothing to fix.
+
+`server/analysis/evidence-review.ts` performs one separate OpenAI Responses API review of
+the saved TAF snapshot and up to three supplied passages from each source. It validates
+source IDs and exact excerpts before accepting a finding. Retrieval/scoring failures,
+unavailable reviews, conflicts, and insufficient evidence are explicit states; none can
+change the SBERT score or judgment.
+
+The derived next action is separate from the SBERT judgment:
+
+- completed checks + low SBERT + verified `no_additional_concern` → eligible;
+- completed checks + high SBERT + verified `supports_high_similarity` → revision required;
+- conflicts or unavailable/insufficient review → adviser review;
+- incomplete retrieval/scoring → analysis incomplete.
+
+Enhancements are suggestions only. They are applied to the editor only after the student
+explicitly accepts them, and those edits must be re-analyzed before submission.
 
 Prompt tokens, completion tokens and the SerpAPI flat fee are priced into
 `analysis_cost_logs` (`ai_provider: "opencode-go"`, $0.14/M input, $1.10/M output).
@@ -319,6 +336,9 @@ Prompt tokens, completion tokens and the SerpAPI flat fee are priced into
 | `sdg_categories`, `field_of_it` | AI classification |
 | `research_gap_analysis`, `recommendations`, `enhancement`, `similarity_reduction` | AI narrative |
 | `form_fields_snapshot` | the TAF fields **as they were analysed** (the basis for "restore original" and for diffing later edits) |
+| `evidence_review_status`, `evidence_review` | validated evidence review, supplied sources, model/prompt version, limitations, failure, and usage |
+| `analysis_execution` | internal/external retrieval, scoring, and evidence availability states |
+| `next_action` | eligibility, revision, adviser-review, or incomplete outcome |
 
 The **scoring breakdown is the audit trail.** The "Detailed Scoring → View More" dialog
 renders it verbatim: per side, per rank, `raw → calibrated → weight → contribution`, plus

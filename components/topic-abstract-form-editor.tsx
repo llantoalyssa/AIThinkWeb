@@ -15,6 +15,7 @@ import {
   getTAFAnalysis,
   listAnalysisVersions,
   discardCancelledAnalysis,
+  retryEvidenceReview,
   type TAFAnalysisResult,
   type AnalysisVersion,
 } from "@/server/actions/analyze-taf";
@@ -267,6 +268,37 @@ export default function TopicAbstractFormEditor({ tafId, initialTaf, onBack, onS
   }
 
   const diffData = diffField ? getFieldDiff(diffField) : null;
+
+  function applySuggestedDraft() {
+    const enhancement = analysisResult?.enhancement;
+    if (!enhancement) return;
+    setFields((previous) => ({
+      proposedTitle: enhancement.improvedTitle || previous.proposedTitle,
+      background: plainTextToHtml(enhancement.improvedBackground || previous.background),
+      objectives: plainTextToHtml(enhancement.improvedObjectives || previous.objectives),
+      literatureReview: plainTextToHtml(
+        enhancement.improvedLiteratureReview || previous.literatureReview,
+      ),
+      methodology: plainTextToHtml(enhancement.improvedMethodology || previous.methodology),
+      referenceList: plainTextToHtml(enhancement.improvedReferences || previous.referenceList),
+    }));
+    toast.success("Suggested draft applied", {
+      description: "Review the changes, then re-analyze before submitting them.",
+    });
+  }
+
+  async function retryCurrentEvidenceReview() {
+    if (!tafId || !analysisResult) return;
+    const result = await retryEvidenceReview(tafId, analysisResult.versionNumber);
+    if (!result.success) {
+      toast.error("Evidence review unavailable", { description: result.error });
+      return;
+    }
+    setAnalysisResult(result.data);
+    const versionsResult = await listAnalysisVersions(tafId);
+    if (versionsResult.success) setVersions(versionsResult.versions);
+    toast.success("Evidence review updated");
+  }
 
   // ── Load existing form ──────────────────────────────
   const loadTAF = useCallback(async (id: string) => {
@@ -722,7 +754,7 @@ export default function TopicAbstractFormEditor({ tafId, initialTaf, onBack, onS
       // (this run's results are stale) — don't touch the UI in that case.
       if (analyzeCancelRef.current || myRun !== analysisRunIdRef.current) {
         // The server action can't be aborted, so a cancelled run still wrote
-        // its result (version row + AI-enhanced fields + status='analyzed').
+        // its result (version row + status='analyzed').
         // Roll it back so cancelling leaves no trace and no "output".
         if (result.success) {
           const discard = await discardCancelledAnalysis(
@@ -745,31 +777,6 @@ export default function TopicAbstractFormEditor({ tafId, initialTaf, onBack, onS
         setAnalysisResult(result.data);
         setActiveVersion(result.data.versionNumber);
         setCurrentStatus("analyzed");
-
-        // Apply the AI enhancement to the form fields (the analysis
-        // already updated the TAF in the DB — mirror it here).
-        // AI returns plain text — convert to HTML paragraphs so it
-        // renders properly in the rich text editor.
-        //
-        // RULE: the enhancement only applies to HIGH-similarity runs.
-        // Low-similarity (passing) results keep the student's original
-        // content untouched — even on re-analyses — matching the server.
-        const isLowSimilarity =
-          result.data.judgment === "low_similarity";
-        if (result.data.enhancement && !isLowSimilarity) {
-          const e = result.data.enhancement;
-          setFields((prev) => ({
-            // Title stays plain text (it's an <Input>, not rich text)
-            proposedTitle: e.improvedTitle || prev.proposedTitle,
-            background: plainTextToHtml(e.improvedBackground || prev.background),
-            objectives: plainTextToHtml(e.improvedObjectives || prev.objectives),
-            literatureReview: plainTextToHtml(
-              e.improvedLiteratureReview || prev.literatureReview,
-            ),
-            methodology: plainTextToHtml(e.improvedMethodology || prev.methodology),
-            referenceList: plainTextToHtml(e.improvedReferences || prev.referenceList),
-          }));
-        }
 
         await updateRecentTAFStatus(targetId, "analyzed");
 
@@ -842,21 +849,9 @@ export default function TopicAbstractFormEditor({ tafId, initialTaf, onBack, onS
         .join(", ")}`
     : undefined;
 
-  // Detect changes vs the analyzed baseline. When an enhancement was
-  // applied, the baseline is the improved content (the TAF was updated
-  // with it); otherwise compare against the original snapshot.
-  // Both sides are normalized to plain text so HTML vs plain-text
-  // representations of the same content don't falsely flag as changes.
-  const baseline = analysisResult?.enhancement
-    ? {
-        proposedTitle: analysisResult.enhancement.improvedTitle,
-        background: analysisResult.enhancement.improvedBackground,
-        objectives: analysisResult.enhancement.improvedObjectives,
-        literatureReview: analysisResult.enhancement.improvedLiteratureReview,
-        methodology: analysisResult.enhancement.improvedMethodology,
-        referenceList: analysisResult.enhancement.improvedReferences,
-      }
-    : analysisResult?.formFieldsSnapshot;
+  // Compare against the immutable analyzed snapshot. Accepted suggestions
+  // therefore remain changed until the student runs a new analysis.
+  const baseline = analysisResult?.formFieldsSnapshot;
   const norm = (v?: string | null) => htmlToText(v || "").trim();
   const hasChanges = showResults && !!baseline && (
     norm(fields.proposedTitle) !== norm(baseline.proposedTitle) ||
@@ -1052,6 +1047,8 @@ export default function TopicAbstractFormEditor({ tafId, initialTaf, onBack, onS
           activeVersion={activeVersion}
           onSelectVersion={handleSelectVersion}
           onReanalyze={handleAnalyze}
+          onApplySuggestedDraft={applySuggestedDraft}
+          onRetryEvidenceReview={retryCurrentEvidenceReview}
         />
       )}
 

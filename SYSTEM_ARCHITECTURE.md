@@ -231,19 +231,23 @@ The submitted-TAF **comment panel** replaces the old free-text chat. It's a **Go
   6  COMBINED SCORE  =  (internal aggregate × 0.40) + (external aggregate × 0.60)
        │
        ▼
-  7  AI ANALYSIS (configured Gemini / OpenCode Go-compatible provider)
+  7  OPENAI EVIDENCE REVIEW (one bounded, validated Responses API call)
+       │     reviews supplied passages only; never changes SBERT scores
+       │     validates source IDs and exact cited excerpts
+       ▼
+  8  AI NARRATIVE (configured Gemini / OpenCode Go-compatible provider)
        │     classifies SDG categories + field of IT
        │     writes a research-gap analysis (cites matched works)
        │     generates an ENHANCEMENT: improved title/background/
        │       objectives/RRL/references + change summary
        ▼
-  8  Store the analysis (snapshot original TAF fields as "before")
+  9  Store scores, execution coverage, evidence review, next action,
+       │     and the original TAF snapshot
        ▼
-  9  AUTO-APPLY ENHANCEMENT  → writes improved values back into the TAF
-       │     (original preserved in form_fields_snapshot; only on HIGH
-       │      similarity runs — low-similarity runs keep the student's text)
+ 10  SHOW SUGGESTED ENHANCEMENT → student must explicitly apply it;
+       │     revised content requires a new analysis before submission
        ▼
- 10  Log the AI + SerpAPI cost  (source: taf_analyze / taf_reanalyze)
+ 11  Log the narrative AI + SerpAPI cost  (source: taf_analyze / taf_reanalyze)
 ```
 
 ### 7.1 💡 How SBERT works (the embeddings engine)
@@ -485,7 +489,7 @@ judgment = combined >= HIGH_SIMILARITY_THRESHOLD (25) ? "high_similarity" : "low
 - Department journals count for **40%** of the combined score; Scholar results count for **60%**.
 - The 25-point threshold determines whether the result is labeled high or low similarity.
 - This score is a guide, not a plagiarism decision. Scholar results can change between searches.
-- Each version keeps the score for the TAF text that was analyzed. Enhancement is applied only on high-similarity runs.
+- Each version keeps the score and immutable snapshot for the TAF text that was analyzed. Enhancements are suggestions until explicitly accepted and re-analyzed.
 
 ### 7.6 Gemini analysis and suggestions
 
@@ -505,7 +509,7 @@ The analysis returns:
 
 ### 7.7 Enhancement and re-analysis
 
-After scoring, Gemini may suggest improvements based on relevant literature and ways to distinguish the proposal's scope, participants, method, or technology. On a high-similarity run, the changes are applied to the TAF. The original fields are saved with that analysis version.
+After scoring, the narrative provider may suggest improvements based on relevant literature and ways to distinguish the proposal's scope, participants, method, or technology. Suggestions do not overwrite the TAF. The student may explicitly apply the suggested draft, review it, and run a new analysis before it can be submitted.
 
 Each analysis version keeps its own score and original fields. Re-analysis scores the text at that time, so the score may change but is not guaranteed to decrease. The internal and external scores show how each source contributed.
 

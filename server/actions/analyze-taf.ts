@@ -11,7 +11,7 @@ import {
   resolveAnalysisModel,
   resolveAnalysisProvider,
 } from "@/server/analysis/ai-analysis";
-import { htmlToPlainText, plainTextToHtml } from "@/lib/html";
+import { htmlToPlainText } from "@/lib/html";
 import {
   HIGH_SIMILARITY_THRESHOLD,
   INTERNAL_WEIGHT,
@@ -31,6 +31,20 @@ import {
   isInstitutionalKeywordToken,
   scholarDomainAnchors,
 } from "@/lib/boilerplate";
+import {
+  DEFAULT_EVIDENCE_REVIEW_MODEL,
+  EVIDENCE_REVIEW_PROMPT_VERSION,
+  requiredChecksCompleted,
+  resolveAnalysisNextAction,
+  resolveLegacyNextAction,
+  reviewEvidence,
+  type AnalysisExecution,
+  type AnalysisNextAction,
+  type EvidenceReviewRecord,
+  type EvidenceReviewStatus,
+  type EvidenceSource,
+  type TafEvidenceFields,
+} from "@/server/analysis/evidence-review";
 function aggregateSimilarityByRank(similarities: number[]): number {
   if (similarities.length === 0) return 0;
   const weights = rankWeightsFor(similarities.length);
@@ -155,6 +169,10 @@ export type TAFAnalysisResult = {
   } | null;
   formFieldsSnapshot: FormFieldsSnapshot | null;
   scoringBreakdown: ScoringBreakdown | null;
+  evidenceReviewStatus: EvidenceReviewStatus;
+  evidenceReview: EvidenceReviewRecord | null;
+  analysisExecution: AnalysisExecution | null;
+  nextAction: AnalysisNextAction;
   analyzedAt: string;
 };
 
@@ -186,6 +204,8 @@ export type AnalysisVersion = {
   internalScore: number;
 
   externalScore: number;
+  nextAction: AnalysisNextAction;
+  evidenceReviewStatus: EvidenceReviewStatus;
 };
 export type InternalMatchDisplay = {
   journalId: string;
@@ -252,6 +272,7 @@ type JournalRow = {
   year: string | null;
   extracted_text: string | null;
   embedding_text: string | null;
+  file_url: string | null;
   embedding: unknown;
 };
 export async function analyzeTAF(tafId: string): Promise<AnalyzeTAFResult> {
@@ -352,7 +373,7 @@ export async function analyzeTAF(tafId: string): Promise<AnalyzeTAFResult> {
   const recencyCutoffYear = getRecencyCutoffYear();
   const { data: journals, error: journalsErr } = await supabase
     .from("journals")
-    .select("id, title, authors, year, extracted_text, embedding_text, embedding")
+    .select("id, title, authors, year, file_url, extracted_text, embedding_text, embedding")
     .order("created_at", { ascending: false });
 
   if (journalsErr) {
@@ -360,7 +381,21 @@ export async function analyzeTAF(tafId: string): Promise<AnalyzeTAFResult> {
   }
 
   let internalResults: { id: string; similarity: number; meta?: Record<string, unknown> }[] = [];
-  let journalVectorCandidates: { id: string; vector: number[]; meta?: Record<string, unknown> }[] = [];
+  const journalVectorCandidates: { id: string; vector: number[]; meta?: Record<string, unknown> }[] = [];
+  const execution: AnalysisExecution = {
+    internal: {
+      retrieval: journalsErr ? "failed" : "completed_no_matches",
+      scoring: "not_required",
+      evidence: "unavailable",
+      error: journalsErr ? "Internal journal retrieval failed." : null,
+    },
+    external: {
+      retrieval: "completed_no_matches",
+      scoring: "not_required",
+      evidence: "unavailable",
+      error: null,
+    },
+  };
 
   const allJournals = (journals || []) as unknown as JournalRow[];
 
@@ -389,6 +424,10 @@ export async function analyzeTAF(tafId: string): Promise<AnalyzeTAFResult> {
           bodyText: (j.embedding_text || j.extracted_text || "")
             .replace(/\s+/g, " ")
             .slice(0, 6000),
+          evidenceText: (j.extracted_text || j.embedding_text || "")
+            .replace(/\s+/g, " ")
+            .slice(0, 8000),
+          fileUrl: j.file_url || "",
         },
       });
     }
@@ -396,8 +435,13 @@ export async function analyzeTAF(tafId: string): Promise<AnalyzeTAFResult> {
     try {
       const queryVec = await embedText(myText);
       internalResults = await findTopSimilarByVector(queryVec, journalVectorCandidates, 5);
+      execution.internal.retrieval =
+        internalResults.length > 0 ? "completed_with_matches" : "completed_no_matches";
     } catch (embedErr) {
       console.error("[analyzeTAF] Journal embedding comparison failed:", embedErr);
+      execution.internal.retrieval = "failed";
+      execution.internal.scoring = "not_required";
+      execution.internal.error = "Internal similarity retrieval failed.";
     }
   }
   const tafAspects = buildTafAspectTexts({
@@ -447,6 +491,8 @@ export async function analyzeTAF(tafId: string): Promise<AnalyzeTAFResult> {
       internalScore = aggregateSimilarityByRank(
         internalMatches.map((m) => m.similarityPercent),
       );
+      execution.internal.scoring = "completed";
+      execution.internal.evidence = "limited";
     } catch (aspectErr) {
       console.error("[analyzeTAF] Internal aspect rescore failed:", aspectErr);
       internalMatches = internalResults.map((r) => ({
@@ -458,18 +504,25 @@ export async function analyzeTAF(tafId: string): Promise<AnalyzeTAFResult> {
         rawCosine: r.similarity,
         weakTopicalOverlap: true,
       }));
+      execution.internal.scoring = "failed";
+      execution.internal.error = "Internal aspect scoring failed.";
     }
   }
 
   const externalSearchResult = await externalSearchPromise;
 
-  if (!externalSearchResult.success) {
+  if (externalSearchResult.status === "failed") {
     console.error("[analyzeTAF] External search failed:", externalSearchResult.error);
+  }
+  if (externalSearchResult.status !== "completed") {
+    execution.external.retrieval = externalSearchResult.status;
+    execution.external.scoring = "not_required";
+    execution.external.error = externalSearchResult.error;
   }
   let externalScore = 0;
   const externalMatches: ExternalMatchDisplay[] = [];
 
-  if (externalSearchResult.success && externalSearchResult.results.length > 0) {
+  if (externalSearchResult.status === "completed") {
     const recentExternal = externalSearchResult.results.filter((r) => {
       const y = r.year ? parseInt(String(r.year)) : NaN;
       return !Number.isNaN(y) && y >= recencyCutoffYear;
@@ -488,7 +541,17 @@ export async function analyzeTAF(tafId: string): Promise<AnalyzeTAFResult> {
       },
     }));
     const { findTopSimilar } = await import("@/server/analysis/similarity");
-    const externalScored = await findTopSimilar(myText, externalCandidates, 5);
+    let externalScored: Awaited<ReturnType<typeof findTopSimilar>> = [];
+    try {
+      externalScored = await findTopSimilar(myText, externalCandidates, 5);
+      execution.external.retrieval =
+        externalScored.length > 0 ? "completed_with_matches" : "completed_no_matches";
+    } catch (embedErr) {
+      console.error("[analyzeTAF] External embedding comparison failed:", embedErr);
+      execution.external.retrieval = "failed";
+      execution.external.scoring = "not_required";
+      execution.external.error = "External similarity retrieval failed.";
+    }
 
     if (externalScored.length > 0) {
       try {
@@ -526,8 +589,12 @@ export async function analyzeTAF(tafId: string): Promise<AnalyzeTAFResult> {
         externalScore = aggregateSimilarityByRank(
           externalMatches.map((m) => m.similarityPercent),
         );
+        execution.external.scoring = "completed";
+        execution.external.evidence = "limited";
       } catch (aspectErr) {
         console.error("[analyzeTAF] External aspect rescore failed:", aspectErr);
+        execution.external.scoring = "failed";
+        execution.external.error = "External aspect scoring failed.";
       }
     }
   }
@@ -572,6 +639,91 @@ export async function analyzeTAF(tafId: string): Promise<AnalyzeTAFResult> {
     threshold: HIGH_SIMILARITY_THRESHOLD,
     judgment,
   };
+  const originalSnapshot: FormFieldsSnapshot = {
+    proposedTitle: taf.proposed_title || "",
+    background: taf.background || "",
+    objectives: taf.objectives || "",
+    literatureReview: taf.literature_review || "",
+    methodology: taf.methodology || "",
+    referenceList: taf.reference_list || "",
+  };
+  const tafEvidence: TafEvidenceFields = {
+    proposedTitle: htmlToPlainText(originalSnapshot.proposedTitle),
+    background: htmlToPlainText(originalSnapshot.background),
+    objectives: htmlToPlainText(originalSnapshot.objectives),
+    literatureReview: htmlToPlainText(originalSnapshot.literatureReview),
+    methodology: htmlToPlainText(originalSnapshot.methodology),
+    referenceList: htmlToPlainText(originalSnapshot.referenceList),
+  };
+  const evidenceSources: EvidenceSource[] = [
+    ...internalMatches.slice(0, 3).map((match) => {
+      const meta = internalResults.find((result) => result.id === match.journalId)?.meta;
+      const body = (meta?.evidenceText as string) || "";
+      return {
+        id: `JOURNAL-${match.journalId}`,
+        kind: "internal" as const,
+        title: match.title,
+        passage: `${match.title}\n${body}`.trim(),
+        link: (meta?.fileUrl as string) || null,
+        page: null,
+        limitation: body
+          ? "Page numbers are unavailable because journal text is stored without page boundaries."
+          : "Only the journal title was available; source text and page numbers were unavailable.",
+        sbertScore: match.similarityPercent,
+        aspects: match.aspects,
+      };
+    }),
+    ...externalMatches.slice(0, 3).map((match, index) => ({
+      id: `SCHOLAR-${index + 1}`,
+      kind: "external" as const,
+      title: match.title,
+      passage: `${match.title}\n${match.publication}`.trim(),
+      link: match.link || null,
+      page: null,
+      limitation: match.publication
+        ? "Only the Google Scholar title and snippet were available; the full paper was not reviewed."
+        : "Only the Google Scholar title was available; the full paper was not reviewed.",
+      sbertScore: match.similarityPercent,
+      aspects: match.aspects,
+    })),
+  ];
+  if (internalMatches.length > 0) {
+    execution.internal.evidence = evidenceSources.some(
+      (source) => source.kind === "internal" && source.passage.trim(),
+    )
+      ? "limited"
+      : "unavailable";
+  }
+  if (externalMatches.length > 0) {
+    execution.external.evidence = evidenceSources.some(
+      (source) => source.kind === "external" && source.passage.trim(),
+    )
+      ? "limited"
+      : "unavailable";
+  }
+
+  const evidenceResult = requiredChecksCompleted(execution)
+    ? await reviewEvidence({ taf: tafEvidence, sources: evidenceSources })
+    : {
+        status: "unavailable" as const,
+        record: {
+          model: process.env.OPENAI_EVIDENCE_MODEL || DEFAULT_EVIDENCE_REVIEW_MODEL,
+          promptVersion: EVIDENCE_REVIEW_PROMPT_VERSION,
+          sources: evidenceSources,
+          review: null,
+          failure: {
+            code: "required_checks_incomplete",
+            message: "Evidence review was skipped because required retrieval or scoring did not complete.",
+          },
+          usage: null,
+        } satisfies EvidenceReviewRecord,
+      };
+  const nextAction = resolveAnalysisNextAction({
+    judgment,
+    execution,
+    reviewStatus: evidenceResult.status,
+    review: evidenceResult.record.review,
+  });
   const aiVerdict: AIVerdict = await analyzeWithAI(
     {
       proposedTitle: taf.proposed_title || "",
@@ -613,15 +765,7 @@ export async function analyzeTAF(tafId: string): Promise<AnalyzeTAFResult> {
   const aiCost = aiInputTokens * aiRates.input + aiOutputTokens * aiRates.output;
 
   const SERPAPI_PER_CALL = 0.01;
-  const serpapiCost = externalSearchResult.success ? SERPAPI_PER_CALL : 0;
-  const originalSnapshot: FormFieldsSnapshot = {
-    proposedTitle: taf.proposed_title || "",
-    background: taf.background || "",
-    objectives: taf.objectives || "",
-    literatureReview: taf.literature_review || "",
-    methodology: taf.methodology || "",
-    referenceList: taf.reference_list || "",
-  };
+  const serpapiCost = externalSearchResult.status === "completed" ? SERPAPI_PER_CALL : 0;
   const enhancement = aiVerdict.enhancement ?? null;
   const now = new Date().toISOString();
 
@@ -635,6 +779,10 @@ export async function analyzeTAF(tafId: string): Promise<AnalyzeTAFResult> {
       combined_score: round2(combinedScore),
       judgment,
       scoring_breakdown: JSON.parse(JSON.stringify(scoringBreakdown)),
+      evidence_review_status: evidenceResult.status,
+      evidence_review: JSON.parse(JSON.stringify(evidenceResult.record)),
+      analysis_execution: JSON.parse(JSON.stringify(execution)),
+      next_action: nextAction,
       internal_matches: JSON.parse(JSON.stringify(internalMatches)),
       external_matches: JSON.parse(JSON.stringify(externalMatches)),
       sdg_categories: aiVerdict.sdgCategories,
@@ -658,39 +806,11 @@ export async function analyzeTAF(tafId: string): Promise<AnalyzeTAFResult> {
     console.error("[analyzeTAF] DB insert error:", insertErr);
     return { success: false, step: "store_results", error: "Failed to store analysis results." };
   }
-  const applyEnhancement = !!enhancement && judgment === "high_similarity";
-
-  if (applyEnhancement) {
-    const { error: updateErr } = await supabase
-      .from("topic_abstract_forms")
-      .update({
-        status: "analyzed",
-        proposed_title: enhancement.improvedTitle || taf.proposed_title || "",
-        background: plainTextToHtml(enhancement.improvedBackground || taf.background || ""),
-        objectives: plainTextToHtml(enhancement.improvedObjectives || taf.objectives || ""),
-        methodology: plainTextToHtml(
-          enhancement.improvedMethodology || taf.methodology || "",
-        ),
-        literature_review: plainTextToHtml(
-          enhancement.improvedLiteratureReview || taf.literature_review || "",
-        ),
-        reference_list: plainTextToHtml(
-          enhancement.improvedReferences || taf.reference_list || "",
-        ),
-      })
-      .eq("id", tafId)
-      .eq("student_id", user.id);
-
-    if (updateErr) {
-      console.error("[analyzeTAF] Enhancement update error:", updateErr);
-    }
-  } else {
-    await supabase
-      .from("topic_abstract_forms")
-      .update({ status: "analyzed" })
-      .eq("id", tafId)
-      .eq("student_id", user.id);
-  }
+  await supabase
+    .from("topic_abstract_forms")
+    .update({ status: "analyzed" })
+    .eq("id", tafId)
+    .eq("student_id", user.id);
   const totalCost = aiCost + serpapiCost;
   const isReanalyze = nextVersion > 1;
   await supabase.from("analysis_cost_logs").insert({
@@ -704,7 +824,7 @@ export async function analyzeTAF(tafId: string): Promise<AnalyzeTAFResult> {
     ai_input_tokens: aiInputTokens,
     ai_output_tokens: aiOutputTokens,
     ai_cost: aiCost,
-    serpapi_calls: externalSearchResult.success ? 1 : 0,
+    serpapi_calls: externalSearchResult.status === "completed" ? 1 : 0,
     serpapi_cost: serpapiCost,
     total_cost: totalCost,
   });
@@ -719,6 +839,10 @@ export async function analyzeTAF(tafId: string): Promise<AnalyzeTAFResult> {
       combinedScore: round2(combinedScore),
       judgment,
       scoringBreakdown,
+      evidenceReviewStatus: evidenceResult.status,
+      evidenceReview: evidenceResult.record,
+      analysisExecution: execution,
+      nextAction,
       internalMatches,
       externalMatches,
       externalSearchConfigured: !!process.env.SERPAPI_API_KEY,
@@ -762,6 +886,9 @@ export async function getTAFAnalysis(
   }
 
   const row = data[0] as AnalysisDbRow;
+  const rowJudgment = row.judgment as "high_similarity" | "low_similarity";
+  const reviewStatus =
+    (row.evidence_review_status as EvidenceReviewStatus | undefined) || "not_reviewed";
 
   return {
     success: true,
@@ -772,7 +899,7 @@ export async function getTAFAnalysis(
       internalScore: row.internal_similarity_score as number,
       externalScore: row.external_similarity_score as number,
       combinedScore: row.combined_score as number,
-      judgment: row.judgment as "high_similarity" | "low_similarity",
+      judgment: rowJudgment,
       internalMatches: row.internal_matches as unknown as InternalMatchDisplay[],
       externalMatches: row.external_matches as unknown as ExternalMatchDisplay[],
       externalSearchConfigured: !!process.env.SERPAPI_API_KEY,
@@ -797,6 +924,16 @@ export async function getTAFAnalysis(
       scoringBreakdown: row.scoring_breakdown
         ? (row.scoring_breakdown as unknown as ScoringBreakdown)
         : null,
+      evidenceReviewStatus: reviewStatus,
+      evidenceReview: row.evidence_review
+        ? (row.evidence_review as unknown as EvidenceReviewRecord)
+        : null,
+      analysisExecution: row.analysis_execution
+        ? (row.analysis_execution as unknown as AnalysisExecution)
+        : null,
+      nextAction:
+        (row.next_action as AnalysisNextAction | undefined) ||
+        resolveLegacyNextAction(rowJudgment),
       analyzedAt: row.analyzed_at as string,
     },
   };
@@ -813,7 +950,7 @@ export async function listAnalysisVersions(
 
   const { data, error } = await supabase
     .from("taf_analysis_results")
-    .select("version_number, combined_score, judgment, analyzed_at, internal_similarity_score, external_similarity_score")
+    .select("version_number, combined_score, judgment, analyzed_at, internal_similarity_score, external_similarity_score, evidence_review_status, next_action")
     .eq("taf_id", tafId)
     .order("version_number", { ascending: false });
 
@@ -823,15 +960,96 @@ export async function listAnalysisVersions(
 
   return {
     success: true,
-    versions: (data || []).map((r) => ({
-      versionNumber: r.version_number as number,
-      combinedScore: r.combined_score as number,
-      judgment: r.judgment as "high_similarity" | "low_similarity",
-      analyzedAt: r.analyzed_at as string,
-      internalScore: parseFloat(String(r.internal_similarity_score)) || 0,
-      externalScore: parseFloat(String(r.external_similarity_score)) || 0,
-    })),
+    versions: (data || []).map((r) => {
+      const judgment = r.judgment as "high_similarity" | "low_similarity";
+      return {
+        versionNumber: r.version_number as number,
+        combinedScore: r.combined_score as number,
+        judgment,
+        analyzedAt: r.analyzed_at as string,
+        internalScore: parseFloat(String(r.internal_similarity_score)) || 0,
+        externalScore: parseFloat(String(r.external_similarity_score)) || 0,
+        evidenceReviewStatus:
+          (r.evidence_review_status as EvidenceReviewStatus | undefined) || "not_reviewed",
+        nextAction:
+          (r.next_action as AnalysisNextAction | undefined) ||
+          resolveLegacyNextAction(judgment),
+      };
+    }),
   };
+}
+
+export async function retryEvidenceReview(
+  tafId: string,
+  versionNumber: number,
+): Promise<AnalyzeTAFResult> {
+  const user = await getCurrentUser();
+  if (!user || user.role !== "student") {
+    return { success: false, step: "auth", error: "Only students can retry an evidence review." };
+  }
+  const supabase = await createClient();
+  const { data: row, error } = await supabase
+    .from("taf_analysis_results")
+    .select("*")
+    .eq("taf_id", tafId)
+    .eq("version_number", versionNumber)
+    .eq("analyzed_by", user.id)
+    .single();
+  if (error || !row) {
+    return { success: false, step: "fetch", error: "Analysis not found." };
+  }
+
+  const reviewStatus =
+    ((row as Record<string, unknown>).evidence_review_status as EvidenceReviewStatus | undefined) ||
+    "not_reviewed";
+  const execution = (row as Record<string, unknown>).analysis_execution as
+    | AnalysisExecution
+    | null;
+  const existingReview = (row as Record<string, unknown>).evidence_review as
+    | EvidenceReviewRecord
+    | null;
+  if (!execution || !requiredChecksCompleted(execution)) {
+    return { success: false, step: "review", error: "Required retrieval or scoring is incomplete." };
+  }
+  if (!existingReview || !["unavailable", "invalid"].includes(reviewStatus)) {
+    return { success: false, step: "review", error: "This evidence review is not eligible for retry." };
+  }
+  const snapshot = (row as Record<string, unknown>).form_fields_snapshot as
+    | FormFieldsSnapshot
+    | null;
+  if (!snapshot) {
+    return { success: false, step: "review", error: "The analyzed TAF snapshot is unavailable." };
+  }
+  const tafEvidence: TafEvidenceFields = {
+    proposedTitle: htmlToPlainText(snapshot.proposedTitle || ""),
+    background: htmlToPlainText(snapshot.background || ""),
+    objectives: htmlToPlainText(snapshot.objectives || ""),
+    literatureReview: htmlToPlainText(snapshot.literatureReview || ""),
+    methodology: htmlToPlainText(snapshot.methodology || ""),
+    referenceList: htmlToPlainText(snapshot.referenceList || ""),
+  };
+  const retried = await reviewEvidence({ taf: tafEvidence, sources: existingReview.sources || [] });
+  const judgment = (row as Record<string, unknown>).judgment as
+    | "high_similarity"
+    | "low_similarity";
+  const nextAction = resolveAnalysisNextAction({
+    judgment,
+    execution,
+    reviewStatus: retried.status,
+    review: retried.record.review,
+  });
+  const { error: updateError } = await supabase
+    .from("taf_analysis_results")
+    .update({
+      evidence_review_status: retried.status,
+      evidence_review: JSON.parse(JSON.stringify(retried.record)),
+      next_action: nextAction,
+    })
+    .eq("id", (row as Record<string, unknown>).id);
+  if (updateError) {
+    return { success: false, step: "store_results", error: "Failed to store the evidence review." };
+  }
+  return getTAFAnalysis(tafId, versionNumber);
 }
 export async function discardCancelledAnalysis(
   tafId: string,

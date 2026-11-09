@@ -14,6 +14,8 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
+import { Button } from "@/components/ui/button";
+import EvidenceReviewCard from "@/components/evidence-review-card";
 import {
   Dialog,
   DialogContent,
@@ -51,6 +53,8 @@ type Props = {
   activeVersion?: number;
   onSelectVersion?: (version: number) => void;
   onReanalyze?: () => void;
+  onApplySuggestedDraft?: () => void;
+  onRetryEvidenceReview?: () => Promise<void>;
 
   reanalyzeDisabled?: boolean;
   reanalyzeDisabledReason?: string;
@@ -62,6 +66,8 @@ export default function TAFAnalysisResults({
   activeVersion,
   onSelectVersion,
   onReanalyze,
+  onApplySuggestedDraft,
+  onRetryEvidenceReview,
   reanalyzeDisabled = false,
   reanalyzeDisabledReason,
 }: Props) {
@@ -76,10 +82,13 @@ export default function TAFAnalysisResults({
     sdgCategories,
     fieldOfIt,
     researchGapAnalysis,
-    recommendations,
     similarityReduction,
     scoringBreakdown,
     analyzedAt,
+    evidenceReviewStatus,
+    evidenceReview,
+    analysisExecution,
+    nextAction,
   } = analysis;
 
   const isHigh = judgment === "high_similarity";
@@ -104,6 +113,15 @@ export default function TAFAnalysisResults({
         </span>
       </div>
       <Separator />
+
+      <div>
+        <h3 className="text-sm font-semibold uppercase tracking-wide text-gray-700">
+          SBERT Similarity
+        </h3>
+        <p className="mt-1 text-xs text-gray-500">
+          Numerical semantic overlap calculated by the existing local embedding pipeline.
+        </p>
+      </div>
 
       {}
       {versions.length > 1 && (
@@ -171,7 +189,7 @@ export default function TAFAnalysisResults({
 
           {
 }
-          {judgment === "high_similarity" && (
+          {(judgment === "high_similarity" || nextAction === "analysis_incomplete") && (
             <div className="ml-auto pt-1">
               <button
                 type="button"
@@ -190,7 +208,9 @@ export default function TAFAnalysisResults({
       )}
 
       {}
-      {versions.length <= 1 && onReanalyze && judgment === "high_similarity" && (
+      {versions.length <= 1 &&
+        onReanalyze &&
+        (judgment === "high_similarity" || nextAction === "analysis_incomplete") && (
         <div className="flex justify-end">
           <button
             type="button"
@@ -277,7 +297,7 @@ export default function TAFAnalysisResults({
               >
                 {isHigh
                   ? "This may require revisions to ensure originality."
-                  : "Your submission appears sufficiently original."}
+                  : "Low detected overlap within the searched sources."}
               </p>
             </div>
 
@@ -341,7 +361,7 @@ export default function TAFAnalysisResults({
                       <span className="text-[10px] opacity-80 mt-0.5">
                         {isHigh
                           ? `≥ ${HIGH_SIMILARITY_THRESHOLD}% — May need revisions`
-                          : `< ${HIGH_SIMILARITY_THRESHOLD}% — Sufficiently original`}
+                          : `< ${HIGH_SIMILARITY_THRESHOLD}% — Low detected overlap within the searched sources.`}
                       </span>
                     </div>
                   </div>
@@ -484,6 +504,14 @@ export default function TAFAnalysisResults({
       </Card>
 
       {}
+      <EvidenceReviewCard
+        status={evidenceReviewStatus}
+        record={evidenceReview}
+        execution={analysisExecution}
+        nextAction={nextAction}
+        onRetry={onRetryEvidenceReview}
+      />
+
       {similarityReduction && (
         <Card className="border-amber-200 bg-amber-50/40">
           <CardHeader className="pb-2">
@@ -532,12 +560,11 @@ export default function TAFAnalysisResults({
           <CardHeader className="pb-2">
             <CardTitle className="flex items-center gap-2 text-base">
               <Sparkles className="h-4 w-4 text-amber-500" />
-              What was Improved
+              Suggested Draft Improvements
             </CardTitle>
             <p className="text-xs text-gray-400">
-              Your TAF content has been updated with these improvements based
-              on the matched journals and external papers. Use the change icon
-              on each field to compare before and after.
+              These suggestions have not changed your TAF. Review them first;
+              applying the draft requires a new analysis before submission.
             </p>
           </CardHeader>
           <CardContent>
@@ -546,6 +573,11 @@ export default function TAFAnalysisResults({
                 {analysis.enhancement.changeSummary}
               </p>
             </div>
+            {onApplySuggestedDraft && (
+              <Button type="button" className="mt-3" onClick={onApplySuggestedDraft}>
+                Apply suggested draft
+              </Button>
+            )}
           </CardContent>
         </Card>
       )}

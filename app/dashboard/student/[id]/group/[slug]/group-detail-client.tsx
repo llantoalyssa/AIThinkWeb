@@ -676,7 +676,7 @@ export default function StudentGroupDetailPage({
               Submit TAF to {group?.groupName}
             </DialogTitle>
             <DialogDescription>
-              Select a TAF and analysis version to submit. Only TAFs analyzed with a similarity score ≤ 24% are eligible.
+              Select an analyzed version cleared for submission or flagged for manual adviser review.
             </DialogDescription>
           </DialogHeader>
 
@@ -698,7 +698,7 @@ export default function StudentGroupDetailPage({
                 </div>
                 <p className="text-sm font-medium text-[#333] mb-1">No eligible TAFs found</p>
                 <p className="text-xs text-gray-500">
-                  You need to create and analyze a TAF first (similarity score must be ≤ 24%).
+                  Create and analyze a TAF first. Incomplete analyses and versions requiring revision cannot be submitted.
                 </p>
               </div>
             ) : (
@@ -745,6 +745,9 @@ export default function StudentGroupDetailPage({
                           ?.eligibleVersions.map((ver) => (
                             <SelectItem key={ver.versionNumber} value={String(ver.versionNumber)}>
                               V{ver.versionNumber} — {ver.combinedScore}% similarity —{' '}
+                              {ver.nextAction === 'adviser_review_required'
+                                ? 'Adviser review required — '
+                                : 'Cleared — '}
                               {new Date(ver.analyzedAt).toLocaleDateString()}
                             </SelectItem>
                           ))}
@@ -753,7 +756,13 @@ export default function StudentGroupDetailPage({
                     {selectedVersion && (
                       <p className="text-xs text-green-600 flex items-center gap-1">
                         <CheckCircle className="h-3 w-3" />
-                        This version passes the similarity threshold.
+                        {availableTAFs
+                          .find((t) => t.tafId === selectedTafId)
+                          ?.eligibleVersions.find(
+                            (version) => String(version.versionNumber) === selectedVersion,
+                          )?.nextAction === 'adviser_review_required'
+                          ? 'This version will be flagged for manual adviser review.'
+                          : 'This version completed the required checks.'}
                       </p>
                     )}
                   </div>

@@ -4,10 +4,16 @@ import { createClient } from "@/server/supabase/server";
 import { getCurrentUser } from "./auth";
 import { logAudit } from "@/server/audit";
 import { notify } from "./approval-workflow";
-import { plainTextToHtml } from "@/lib/html";
-import { HIGH_SIMILARITY_THRESHOLD, formatName } from "@/lib/constants";
+import { formatName } from "@/lib/constants";
 import type { FormFieldsSnapshot } from "./analyze-taf";
 import type { InternalMatchDisplay, ExternalMatchDisplay, ScoringBreakdown } from "./analyze-taf";
+import {
+  resolveLegacyNextAction,
+  type AnalysisExecution,
+  type AnalysisNextAction,
+  type EvidenceReviewRecord,
+  type EvidenceReviewStatus,
+} from "@/server/analysis/evidence-review";
 import { groupSlug } from "@/lib/slug";
 
 // ── Types ──────────────────────────────────────────────────────────
@@ -17,6 +23,7 @@ export type EligibleVersion = {
   combinedScore: number;
   judgment: "high_similarity" | "low_similarity";
   analyzedAt: string;
+  nextAction: AnalysisNextAction;
 };
 
 export type AvailableTAF = {
@@ -149,7 +156,7 @@ export async function getStudentAvailableTAFs(
   const tafIds = tafs.map((t) => t.id);
   const { data: analyses, error: analysisErr } = await supabase
     .from("taf_analysis_results")
-    .select("taf_id, version_number, combined_score, judgment, analyzed_at")
+    .select("taf_id, version_number, combined_score, judgment, analyzed_at, next_action")
     .in("taf_id", tafIds)
     .order("version_number", { ascending: false });
 
@@ -166,8 +173,13 @@ export async function getStudentAvailableTAFs(
       const combinedScore = parseFloat(String(row.combined_score)) || 0;
       const judgment = row.judgment as string;
 
-      // Only include low_similarity (combinedScore below the threshold)
-      if (judgment === "low_similarity" || combinedScore < HIGH_SIMILARITY_THRESHOLD) {
+      const nextAction =
+        (row.next_action as AnalysisNextAction | null) ||
+        resolveLegacyNextAction(judgment as "low_similarity" | "high_similarity");
+      if (
+        nextAction === "eligible_for_submission" ||
+        nextAction === "adviser_review_required"
+      ) {
         if (!eligibleByTaf.has(tafId)) {
           eligibleByTaf.set(tafId, []);
         }
@@ -176,6 +188,7 @@ export async function getStudentAvailableTAFs(
           combinedScore,
           judgment: judgment as "low_similarity" | "high_similarity",
           analyzedAt: row.analyzed_at as string,
+          nextAction,
         });
       }
     }
@@ -246,7 +259,7 @@ export async function submitTAFToGroup(
   // 3. Verify the analysis version exists and is eligible (low_similarity)
   const { data: analysis } = await supabase
     .from("taf_analysis_results")
-    .select("version_number, combined_score, judgment, form_fields_snapshot, enhancement, internal_similarity_score, external_similarity_score")
+    .select("version_number, combined_score, judgment, form_fields_snapshot, internal_similarity_score, external_similarity_score, next_action")
     .eq("taf_id", tafId)
     .eq("version_number", analysisVersion)
     .single();
@@ -258,55 +271,36 @@ export async function submitTAFToGroup(
   const combinedScore = parseFloat(String(analysis.combined_score)) || 0;
   const judgment = analysis.judgment as string;
 
-  if (judgment !== "low_similarity" && combinedScore >= HIGH_SIMILARITY_THRESHOLD) {
+  const nextAction =
+    (analysis.next_action as AnalysisNextAction | null) ||
+    resolveLegacyNextAction(judgment as "low_similarity" | "high_similarity");
+
+  if (
+    nextAction !== "eligible_for_submission" &&
+    nextAction !== "adviser_review_required"
+  ) {
     return {
       success: false,
-      error: `This TAF version has a similarity score of ${combinedScore}%, which is at or above the ${HIGH_SIMILARITY_THRESHOLD}% threshold. Please revise and re-analyze.`,
+      error:
+        nextAction === "analysis_incomplete"
+          ? "This analysis is incomplete because a required comparison did not finish. Please re-analyze before submission."
+          : `This TAF version has a similarity score of ${combinedScore}%, and revision is required before submission.`,
     };
   }
 
-  // 4. Build the taf_snapshot — prefer the AI-enhanced content (the
-  //    analysis auto-applied improvements)
+  // 4. Submit the immutable analyzed snapshot; suggested edits require re-analysis.
 
   let tafSnapshot: FormFieldsSnapshot;
 
-  const enhancement = analysis.enhancement as unknown as
-    | {
-        improvedTitle: string;
-        improvedBackground: string;
-        improvedObjectives: string;
-        improvedMethodology: string;
-        improvedLiteratureReview: string;
-        improvedReferences: string;
-      }
-    | null
-    | undefined;
-
-  if (enhancement) {
-    tafSnapshot = {
-      proposedTitle: enhancement.improvedTitle || taf.proposed_title || "",
-      background: plainTextToHtml(enhancement.improvedBackground) || taf.background || "",
-      objectives: plainTextToHtml(enhancement.improvedObjectives) || taf.objectives || "",
-      literatureReview:
-        plainTextToHtml(enhancement.improvedLiteratureReview) ||
-        taf.literature_review ||
-        "",
-      methodology:
-        plainTextToHtml(enhancement.improvedMethodology) || taf.methodology || "",
-      referenceList: plainTextToHtml(enhancement.improvedReferences) || taf.reference_list || "",
-    };
-  } else if (analysis.form_fields_snapshot) {
+  if (analysis.form_fields_snapshot) {
     const ff = analysis.form_fields_snapshot as unknown as Record<string, unknown>;
     tafSnapshot = {
       proposedTitle: (ff.proposedTitle as string) || taf.proposed_title || "",
-      background: plainTextToHtml((ff.background as string) || "") || taf.background || "",
-      objectives: plainTextToHtml((ff.objectives as string) || "") || taf.objectives || "",
-      literatureReview:
-        plainTextToHtml((ff.literatureReview as string) || "") ||
-        taf.literature_review ||
-        "",
+      background: (ff.background as string) || taf.background || "",
+      objectives: (ff.objectives as string) || taf.objectives || "",
+      literatureReview: (ff.literatureReview as string) || taf.literature_review || "",
       methodology: (ff.methodology as string) || taf.methodology || "",
-      referenceList: plainTextToHtml((ff.referenceList as string) || "") || taf.reference_list || "",
+      referenceList: (ff.referenceList as string) || taf.reference_list || "",
     };
   } else {
     tafSnapshot = {
@@ -646,6 +640,10 @@ export type SubmissionWithAnalysis = GroupSubmission & {
   internalSimilarity: number;
   externalSimilarity: number;
   scoringBreakdown: ScoringBreakdown | null;
+  evidenceReviewStatus: EvidenceReviewStatus;
+  evidenceReview: EvidenceReviewRecord | null;
+  analysisExecution: AnalysisExecution | null;
+  nextAction: AnalysisNextAction;
 };
 
 export type SubmissionDetailResult =
@@ -722,11 +720,17 @@ export async function getSubmissionById(
     internalSimilarity: 0,
     externalSimilarity: 0,
     scoringBreakdown: null,
+    evidenceReviewStatus: "not_reviewed",
+    evidenceReview: null,
+    analysisExecution: null,
+    nextAction: resolveLegacyNextAction(
+      data.judgment as "high_similarity" | "low_similarity",
+    ),
   };
 
   const { data: analysisRows } = await supabase
     .from("taf_analysis_results")
-    .select("internal_matches, external_matches, sdg_categories, field_of_it, research_gap_analysis, internal_similarity_score, external_similarity_score, scoring_breakdown")
+    .select("internal_matches, external_matches, sdg_categories, field_of_it, research_gap_analysis, internal_similarity_score, external_similarity_score, scoring_breakdown, evidence_review_status, evidence_review, analysis_execution, next_action, judgment")
     .eq("taf_id", data.taf_id)
     .eq("version_number", data.analysis_version)
     .maybeSingle();
@@ -743,6 +747,18 @@ export async function getSubmissionById(
     analysisData.scoringBreakdown = row.scoring_breakdown
       ? (row.scoring_breakdown as unknown as ScoringBreakdown)
       : null;
+    analysisData.evidenceReviewStatus =
+      (row.evidence_review_status as EvidenceReviewStatus) || "not_reviewed";
+    analysisData.evidenceReview = row.evidence_review
+      ? (row.evidence_review as unknown as EvidenceReviewRecord)
+      : null;
+    analysisData.analysisExecution = row.analysis_execution
+      ? (row.analysis_execution as unknown as AnalysisExecution)
+      : null;
+    const analysisJudgment = (row.judgment as "high_similarity" | "low_similarity") ||
+      (data.judgment as "high_similarity" | "low_similarity");
+    analysisData.nextAction =
+      (row.next_action as AnalysisNextAction) || resolveLegacyNextAction(analysisJudgment);
   }
 
   const stepLabels: Record<number, string> = {

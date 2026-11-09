@@ -6,6 +6,7 @@ import ApprovalProgressTracker from "@/components/approval-progress-tracker";
 import JournalViewerButton from "@/components/journal-viewer-button";
 import ScoringBreakdownCard from "@/components/scoring-breakdown-card";
 import AspectScoreBreakdown from "@/components/aspect-score-breakdown";
+import EvidenceReviewCard from "@/components/evidence-review-card";
 import AnnotationLayer from "@/components/annotation-layer";
 import AnnotatedSection from "@/components/annotated-section";
 import AnnotatableRichEditor from "@/components/annotatable-rich-editor";
@@ -305,6 +306,10 @@ export default function SubmissionReviewContent({
       )}
 
       {}
+      <div className="mb-3">
+        <h2 className="text-sm font-semibold uppercase tracking-wide text-gray-700">SBERT Similarity</h2>
+        <p className="mt-1 text-xs text-gray-500">Numerical semantic overlap from the local embedding pipeline.</p>
+      </div>
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
         <Card className="lg:col-span-2 overflow-hidden border-t-4 border-t-[#8B1A1A] shadow-md">
           <CardContent className="p-6 sm:p-8">
@@ -367,7 +372,7 @@ export default function SubmissionReviewContent({
               >
                 {isHigh
                   ? "This may require revisions to ensure originality."
-                  : "The submission appears sufficiently original."}
+                  : "Low detected overlap within the searched sources."}
               </p>
             </div>
             <Dialog open={scoreModalOpen} onOpenChange={setScoreModalOpen}>
@@ -426,7 +431,7 @@ export default function SubmissionReviewContent({
                       <span className="text-[10px] opacity-80 mt-0.5">
                         {isHigh
                           ? `≥ ${HIGH_SIMILARITY_THRESHOLD}% — May need revisions`
-                          : `< ${HIGH_SIMILARITY_THRESHOLD}% — Sufficiently original`}
+                          : `< ${HIGH_SIMILARITY_THRESHOLD}% — Low detected overlap within the searched sources.`}
                       </span>
                     </div>
                   </div>
@@ -506,6 +511,15 @@ export default function SubmissionReviewContent({
             </div>
           </CardContent>
         </Card>
+      </div>
+
+      <div className="mb-8">
+        <EvidenceReviewCard
+          status={submission.evidenceReviewStatus}
+          record={submission.evidenceReview}
+          execution={submission.analysisExecution}
+          nextAction={submission.nextAction}
+        />
       </div>
 
       {}

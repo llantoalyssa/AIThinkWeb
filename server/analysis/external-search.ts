@@ -13,10 +13,10 @@ export type ScholarResult = {
 };
 
 export type ExternalSearchResult = {
-  success: true;
+  status: "completed";
   results: ScholarResult[];
 } | {
-  success: false;
+  status: "unconfigured" | "failed";
   error: string;
   results?: never;
 };
@@ -33,10 +33,10 @@ export async function searchGoogleScholar(
   const apiKey = process.env.SERPAPI_API_KEY;
 
   if (!apiKey) {
-    console.warn("[external-search] SERPAPI_API_KEY not set — returning empty results");
+    console.warn("[external-search] SERPAPI_API_KEY not set");
     return {
-      success: true,
-      results: [],
+      status: "unconfigured",
+      error: "Google Scholar search is not configured.",
     };
   }
 
@@ -65,15 +65,15 @@ export async function searchGoogleScholar(
           "[external-search] Scholar returned no results for query (treated as empty):",
           errMsg,
         );
-        return { success: true, results: [] };
+        return { status: "completed", results: [] };
       }
       console.error("[external-search] SerpAPI response error:", errMsg);
-      return { success: false, error: errMsg };
+      return { status: "failed", error: errMsg };
     }
 
     if (!raw.organic_results || !Array.isArray(raw.organic_results)) {
       return {
-        success: true,
+        status: "completed",
         results: [],
       };
     }
@@ -102,7 +102,7 @@ export async function searchGoogleScholar(
       })
       .filter((r: ScholarResult) => r.title); // remove empty titles
 
-    return { success: true, results };
+    return { status: "completed", results };
   } catch (err) {
     const message =
       err instanceof Error
@@ -113,6 +113,6 @@ export async function searchGoogleScholar(
             : JSON.stringify(err)
           : "Unknown error";
     console.error("[external-search] SerpAPI error:", message);
-    return { success: false, error: message };
+    return { status: "failed", error: message };
   }
 }

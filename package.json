@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test:evidence-review": "node --env-file=.env --experimental-strip-types scripts/test-evidence-review.mjs"
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
