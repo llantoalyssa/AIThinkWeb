@@ -15,13 +15,16 @@ export async function createClient() {
         setAll(cookiesToSet) {
           try {
             cookiesToSet.forEach(({ name, value, options }) =>
-
+              // The `options` argument carries path / maxAge / sameSite /
+              // secure. Dropping it makes the cookie path-scoped to the CURRENT
+              // route and session-only, so the middleware sees no session on
+              // every other path ("auth cookie present: false") — the random
+              // logout bug.
               cookieStore.set(name, value, options)
             );
-          } catch {            
-            // Called from a Server Component — cookie writes are only allowed
-            // in Server Actions / Route Handlers. Middleware refreshes the
-            // session, so this can be safely ignored here.
+          } catch {
+            // Called from a Server Component, where cookies are read-only.
+            // Harmless: the middleware refreshes and persists them instead.
           }
         },
       },

@@ -1,5 +1,10 @@
 "use client";
 
+// ============================================================
+// Associate dean — a TAF opened from inside one of the associate dean's OWN
+// advisory groups. Mirrors the dean's group-scoped route so "Back" returns to
+// the selected group rather than the TAF Submissions tab.
+// ============================================================
 
 import { useParams } from "next/navigation";
 import ApproverSubmissionView from "@/components/approver-submission-view";

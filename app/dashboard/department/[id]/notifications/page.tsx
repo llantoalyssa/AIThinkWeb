@@ -1,4 +1,10 @@
-
+// ============================================================
+// Department notifications — SERVER entry point.
+//
+// Mirrors the student route: identity and the notification list are resolved
+// in PARALLEL here and ship with the first render, so opening the page costs
+// no client data round trips.
+// ============================================================
 
 import { redirect } from "next/navigation";
 import { getCurrentUser } from "@/server/actions/auth";
@@ -18,6 +24,9 @@ export default async function DepartmentNotificationsRoute() {
     redirect(`${rolePath(user.role)}/${user.id}`);
   }
 
+  // The department obeys the permission set, so its nav is FILTERED by these —
+  // resolved here so the page still ships with the first render (no client
+  // fetch, no nav flicker).
   const permissions = await getGrantedPermissions(user.id);
 
   return (

@@ -1,4 +1,30 @@
 "use client";
+
+// ============================================================
+// ApprovedTafTable — the READ-ONLY "Approved TAF" list for PAGE routes.
+//
+// The approver roles keep the richer table inside their dashboard's
+// ?tab=approved panel (search, academic-year filter, PDF export). This is the
+// page-shaped equivalent for the roles whose dashboard has no tabs: the
+// adviser's /approved and the department's /approved.
+//
+// It renders the SAME server read the dashboards use (getApprovedTAFs, which is
+// gated by `taf.approved.view` and scoped by RLS), so "what is approved" can
+// never differ between the two surfaces.
+//
+// `linkStyle` is a serializable descriptor rather than a callback, because the
+// page that renders this is a SERVER component and a function prop cannot cross
+// that boundary:
+//   "group"   — /<basePath>/group/<slug>/submission/<id>   (adviser)
+//   NOTE: rows here carry `?from=approved-page`, NOT `?from=approved` — the
+//   latter already means "the Approved TAB of TAF Submissions", and reusing it
+//   sent this page's Back button to TAF Submissions.
+//   "flat"    — /<basePath>/submission/<id>?from=approved-page  (department: it has
+//               its own submission route, so a row opens the TAF itself)
+//   "section" — /<basePath>?section=submissions            (fallback: the list)
+//   "none"    — rows are read-only
+// ============================================================
+
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { CalendarDays, Search } from "lucide-react";
@@ -6,6 +32,8 @@ import { CalendarDays, Search } from "lucide-react";
 import type { ApprovalListItem } from "@/server/actions/approval-workflow";
 import { groupSlug } from "@/lib/slug";
 import { HIGH_SIMILARITY_THRESHOLD } from "@/lib/constants";
+
+// Same chips, same labels, as the dashboard's approved table.
 const STATUS_STYLES: Record<string, string> = {
   pending: "bg-amber-50 text-amber-700 border-amber-200",
   under_review: "bg-blue-50 text-blue-700 border-blue-200",
@@ -27,7 +55,7 @@ export default function ApprovedTafTable({
   description,
 }: {
   items: ApprovalListItem[];
-
+  /** The role's own dashboard root, e.g. /dashboard/adviser/<id>. */
   basePath: string;
   linkStyle?: "group" | "flat" | "section" | "none";
   description?: string;
@@ -56,7 +84,7 @@ export default function ApprovedTafTable({
     if (linkStyle === "group") {
       return `${basePath}/group/${groupSlug(item.groupName)}/submission/${item.id}?from=approved-page`;
     }
-
+    // "flat": open the TAF in this role's own submission route.
     if (linkStyle === "flat") {
       return `${basePath}/submission/${item.id}?from=approved-page`;
     }
@@ -74,7 +102,7 @@ export default function ApprovedTafTable({
       <div className="flex flex-col sm:flex-row sm:items-center gap-3 border-b px-4 py-3">
         <h3 className="text-sm font-semibold text-[#333] flex-1">Approved TAFs</h3>
 
-        {}
+        {/* Search — the dashboard panel's own control, same size/placement */}
         <div className="relative">
           <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-gray-400" />
           <input
@@ -85,7 +113,7 @@ export default function ApprovedTafTable({
           />
         </div>
 
-        {}
+        {/* Academic-year filter */}
         <div className="relative">
           <CalendarDays className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-gray-400" />
           <select
@@ -117,8 +145,8 @@ export default function ApprovedTafTable({
         </p>
       ) : (
         <>
-        {
-}
+        {/* Phones: one card per approved TAF. Five columns cannot fit a 360px
+            screen, and the app's department tables already read as cards there. */}
         <div className="divide-y sm:hidden">
           {filtered.map((row) => {
             const href = hrefFor(row);

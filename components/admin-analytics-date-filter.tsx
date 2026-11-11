@@ -1,5 +1,20 @@
 "use client";
 
+// ============================================================
+// Admin Analytics — "Custom dates" filter.
+//
+// The preset tabs (Today / Month / Year / All time) are plain links because the
+// range belongs in the URL. A custom span needs two inputs, so it lives in this
+// small dialog: pick From and To, Apply → the page re-renders with
+// ?range=custom&from=…&to=…; Reset → back to the default (This month).
+//
+// Both dates are calendar DAYS in Philippine time; the server turns `to` into an
+// exclusive upper bound at the next midnight so the final day is included.
+//
+// No state is derived in an effect: the inputs start from the URL's values and
+// only change when the user types.
+// ============================================================
+
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { CalendarRange, RotateCcw } from "lucide-react";
@@ -22,11 +37,11 @@ export default function AdminAnalyticsDateFilter({
   custom,
   label,
 }: {
-  
+  /** Route the filter pushes to (…/admin-analytics). */
   base: string;
   range: AdminAnalyticsRange;
   custom: CustomDateRange | null;
-  
+  /** Label to show on the trigger when a custom span is active. */
   label: string;
 }) {
   const router = useRouter();

@@ -21,7 +21,14 @@ export const metadata: Metadata = {
   description:
     "AI-THINK — thesis topic and Topic Abstract Form (TAF) management with AI-assisted similarity analysis.",
   applicationName: "AITHINK",
+  // Icons come from the app/ file conventions (favicon.ico, icon.png,
+  // apple-icon.png), all generated from public/AIThink-Logo.png.
 };
+
+// viewport-fit=cover is REQUIRED for env(safe-area-inset-*) to report real
+// values on iOS — the bottom nav's .safe-area-bottom padding depends on it, and
+// without it the nav sits under the home indicator and can't be tapped.
+// Zoom is deliberately left unrestricted (no maximumScale) for accessibility.
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,

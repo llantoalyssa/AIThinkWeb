@@ -7,6 +7,12 @@ import { Separator } from "@/components/ui/separator";
 import { Loader2, DollarSign, Cpu, Globe, Users, FileText } from "lucide-react";
 import { SOURCE_META, SourceBadge } from "@/components/cost-log-source-badge";
 
+/**
+ * The Cost Logs TABLE. A client component because paging is interactive; the
+ * route that renders it (app/cost-logs/page.tsx) is a SERVER page that resolved
+ * the account and its `pages.cost_logs` grant first, so the chrome and the gate
+ * are decided before this ships.
+ */
 export default function CostLogsClient() {
   const [logs, setLogs] = useState<CostLogEntry[]>([]);
   const [loading, setLoading] = useState(true);

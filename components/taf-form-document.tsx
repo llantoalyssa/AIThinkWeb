@@ -1,4 +1,34 @@
 "use client";
+
+// ============================================================
+// TafFormExport — "Export TAF to PDF" for a FULLY APPROVED submission,
+// laid out as the College's OFFICIAL FORM:
+//   BatStateU-FO-COL-03 · Revision 00 · "TOPIC ABSTRACT FORM"
+//
+// Printing model (the part that matters):
+//   • Long / folio bond — 21.59 × 33.02 cm — with 2 cm page margins, so every
+//     page gets the same top/bottom space even when a section flows over.
+//   • The header block (seal, reference line, Title, College / Proponents /
+//     Program, Proposed Title) is ONE table, so its rules line up.
+//   • The five narrative sections are NOT table rows. A table row is atomic in
+//     print: `break-inside: avoid` shoves it whole onto the next page and leaves
+//     a gap. They are block-level `.field-section` divs with their own borders
+//     and `box-decoration-break: clone`, so a long Background / RRL continues
+//     straight over the page break with its border carried along — Word-like
+//     content pagination.
+//   • Committee + tracking number are the last table.
+//
+// Deviations from the paper form, all requested by the office:
+//   • PROPONENTS lists every member of the advisory group (names only, "Last,
+//     First M.", sorted by surname)
+//   • the proposed title value is bold and centred, in quotes
+//   • "TOPIC EVALUATION COMMITTEE" is not bold; evaluator names are centred
+//   • no "Signed (date)" line
+//   • the committee is filled from the accounts that ACTUALLY APPROVED the TAF,
+//     bottom-up: VCRDES → Dean → Associate Dean → Adviser; a stand-in prints the
+//     signer marked "(ACTING)".
+// ============================================================
+
 import { useState } from "react";
 import { createPortal } from "react-dom";
 import { FileDown, Loader2 } from "lucide-react";
@@ -8,13 +38,41 @@ import { looksLikeHtml, plainTextToHtml } from "@/lib/html";
 type Props = {
   submission: SubmissionWithAnalysis;
 };
+
+/** The committee line each chain role occupies on the official form. */
 const COMMITTEE_POSITIONS: Record<string, string> = {
   vcrdes: "Vice Chancellor for Research, Development and Extension Services",
   dean: "Dean, CICS",
   associate_dean: "Associate Dean, CICS",
   adviser: "Faculty Expert/Adviser",
 };
+
+/** The form prints bottom-up: the highest signatory first. */
 const COMMITTEE_ORDER = ["vcrdes", "dean", "associate_dean", "adviser"];
+
+/**
+ * Renders one field's value.
+ *
+ * Rich text (authored in the editor) is HTML and is rendered as-is.
+ *
+ * PLAIN text is rendered EXACTLY as typed, with `white-space: pre-wrap`. It used
+ * to go through plainTextToHtml(), which rewrites bullet/number lines into
+ * <ol>/<ul> and lets the browser renumber them — that is why an indented outline
+ * like
+ *     1.User and Data Management
+ *       1.1 Develop secure login …
+ * lost its "1." and "1.1" markers in the PDF.
+ */
+/**
+ * Renders a field EXACTLY as it is stored — the same thing the input field /
+ * editor shows.
+ *
+ * No renumbering, no re-nesting, no tag rewriting: the office types its outline
+ * by hand (indent spaces, "1.", "1.1", blank lines between blocks) and expects
+ * the PDF to carry that layout verbatim. Leading whitespace is preserved by
+ * `white-space: pre-wrap` on the value, which is why plain text is rendered as
+ * text rather than run through an HTML list converter.
+ */
 function FieldValue({ value }: { value: string }) {
   if (!value) return <>—</>;
 
@@ -24,6 +82,8 @@ function FieldValue({ value }: { value: string }) {
 
   return <div className="plain-block">{value}</div>;
 }
+
+/** "Last, First M." — the form's proponent format. */
 function proponentName(m: {
   firstName: string;
   lastName: string;
@@ -41,6 +101,8 @@ export default function TafFormExport({ submission }: Props) {
 
   function handleExport() {
     setExporting(true);
+
+    // Defer so the spinner paints before the print dialog opens.
     setTimeout(() => {
       window.print();
       setExporting(false);
@@ -52,8 +114,16 @@ export default function TafFormExport({ submission }: Props) {
   const fields: {
     label: string;
     value: string;
+    /**
+     * The form's section shapes:
+     *   wholeGray — the whole cell is shaded (Background)
+     *   labelBar  — ONLY the label line is shaded; the answer stays white
+     *               (General Objectives, Research Methodology)
+     *   plain     — no shading (Review of Related Literatures)
+     *   compact   — no shading, shaded label removed (References)
+     */
     variant: "wholeGray" | "labelBar" | "plain" | "compact";
-
+    /** First-line indent for prose sections (off for References). */
     indented?: boolean;
     style?: "references";
   }[] = [
@@ -88,6 +158,11 @@ export default function TafFormExport({ submission }: Props) {
       style: "references",
     },
   ];
+
+  /**
+   * Proponents = the whole advisory group, one name PER LINE, ordered by
+   * surname then first name. No separator — a line break separates them.
+   */
   const proponents = [...(submission.groupMembers || [])].sort(
     (a, b) =>
       a.lastName.localeCompare(b.lastName) ||
@@ -114,6 +189,13 @@ export default function TafFormExport({ submission }: Props) {
       ? createPortal(
           <>
             <style>{`
+              /* ==========================================
+                 PAGE CONFIGURATION — Long / folio bond
+                 21.59 x 33.02 cm, 2 cm margins. A real @page
+                 margin is the only way to get the same top
+                 space on EVERY page.
+                 ========================================== */
+
               @media print {
                 @page {
                   size: 21.59cm 33.02cm;
@@ -147,6 +229,11 @@ export default function TafFormExport({ submission }: Props) {
                   page-break-inside: auto !important;
                   break-inside: auto !important;
                 }
+
+                /* ==========================================
+                   TABLES (header + committee)
+                   ========================================== */
+
                 #taf-pdf-export table {
                   width: 100%;
                   border-collapse: collapse;
@@ -174,6 +261,11 @@ export default function TafFormExport({ submission }: Props) {
                 }
 
                 #taf-pdf-export .gray-bg { background-color: #f0f0f0 !important; }
+
+                /* ==========================================
+                   CONTINUOUS FIELD SECTIONS
+                   ========================================== */
+
                 #taf-pdf-export .fields-container {
                   width: 100%;
                   box-sizing: border-box;
@@ -197,9 +289,13 @@ export default function TafFormExport({ submission }: Props) {
                   -webkit-box-decoration-break: clone;
                   box-decoration-break: clone;
                 }
+
+                /* The Proposed Title row above already drew the top rule. */
                 #taf-pdf-export .fields-container > .field-section:first-child {
                   border-top: 0 !important;
                 }
+
+                /* No doubled rules between sections. */
                 #taf-pdf-export .field-section + .field-section {
                   border-top: 0 !important;
                   margin-top: 0;
@@ -223,11 +319,18 @@ export default function TafFormExport({ submission }: Props) {
                   page-break-inside: auto !important;
                   break-inside: auto !important;
                 }
+
+                /* A label never ends a page on its own. */
                 #taf-pdf-export .field-section .field-label,
                 #taf-pdf-export .field-section .pad-label {
                   page-break-after: avoid !important;
                   break-after: avoid !important;
                 }
+
+                /* ==========================================
+                   HELPERS
+                   ========================================== */
+
                 #taf-pdf-export .text-center { text-align: center; }
                 #taf-pdf-export .text-left { text-align: left; }
                 #taf-pdf-export .align-middle { vertical-align: middle; }
@@ -241,6 +344,11 @@ export default function TafFormExport({ submission }: Props) {
                 }
 
                 #taf-pdf-export .pad-content { padding: 6px 8px; }
+
+                /* ==========================================
+                   TYPOGRAPHY
+                   ========================================== */
+
                 #taf-pdf-export .form-title {
                   font-weight: bold;
                   text-align: center;
@@ -272,10 +380,14 @@ export default function TafFormExport({ submission }: Props) {
                 }
 
                 #taf-pdf-export .proposed-title-content p { margin: 0; }
+
+                /* First-line indent — currently OFF. The wiring is kept
+                   (the indented flag plus .indented-content on the wrappers)
+                   so turning it back on is this one value: 2.5em. */
                 #taf-pdf-export .indented-content p {
                   text-indent: 0 !important;
                 }
-
+                /* 1.5 spacing for the narrative sections. */
                 #taf-pdf-export .field-content,
                 #taf-pdf-export .pad-content,
                 #taf-pdf-export .indented-content,
@@ -297,6 +409,11 @@ export default function TafFormExport({ submission }: Props) {
                   padding-right: 15px;
                   margin-top: 15px;
                 }
+
+                /* ==========================================
+                   PROPOSED TITLE / PROPONENTS
+                   ========================================== */
+
                 #taf-pdf-export .proponents-list {
                   display: block;
                 }
@@ -305,6 +422,11 @@ export default function TafFormExport({ submission }: Props) {
                   font-size: 12pt;
                   line-height: 1.35;
                 }
+
+                /* ==========================================
+                   COMMITTEE
+                   ========================================== */
+
                 #taf-pdf-export .committee-title {
                   display: block;
                   font-size: 12pt;
@@ -360,6 +482,11 @@ export default function TafFormExport({ submission }: Props) {
                 }
 
                 #taf-pdf-export .committee-table p { margin-bottom: 0 !important; }
+
+                /* ==========================================
+                   BODY COPY — justified, 11.5pt
+                   ========================================== */
+
                 #taf-pdf-export p,
                 #taf-pdf-export li,
                 #taf-pdf-export .field-content,
@@ -393,6 +520,13 @@ export default function TafFormExport({ submission }: Props) {
                   orphans: 2;
                   widows: 2;
                 }
+
+                /* LISTS — rendered the way the editor renders them.
+                   Tailwind's preflight zeroes ul/ol and the exported clone lives
+                   in document.body, so the markers had to be restored. Numbers
+                   are the browser's own list markers again: the office types its
+                   outline by hand, and renumbering it in JS produced a different
+                   layout from the field they typed in. */
                 #taf-pdf-export ul,
                 #taf-pdf-export ol {
                   margin: 0.35em 0 0.8em;
@@ -420,16 +554,35 @@ export default function TafFormExport({ submission }: Props) {
                 #taf-pdf-export ol ol {
                   padding-left: 1.8em;
                 }
+
+                /* PARAGRAPH INDENT — mirror of the editor.
+                   The review/editor view typesets body copy with a 2em
+                   FIRST-LINE indent (app/globals.css: .rich-text-content p
+                   { text-indent: 2em }). The export had 0, which is why an
+                   outline typed as plain paragraphs ("1.1 Develop …") sat flush
+                   at the left edge while the numbered list items ("1.") were
+                   indented — the two columns did not line up as they do on
+                   screen. */
                 #taf-pdf-export .field-content p {
                   text-indent: 2em !important;
                   margin: 0 0 0.35em !important;
                 }
+
+                /* No indent for the opening paragraph or for text inside a
+                   list item — same exceptions the editor applies. */
                 #taf-pdf-export .field-content > p:first-child,
                 #taf-pdf-export .field-content > div > p:first-child,
                 #taf-pdf-export .field-content li p,
                 #taf-pdf-export .field-content li > p {
                   text-indent: 0 !important;
                 }
+
+                /* MANUAL INDENTATION.
+                   HTML collapses leading spaces, so an outline typed by hand
+                   ("   1.1 …") lost its indent in the PDF while it looked
+                   indented in the field. pre-wrap keeps the author's spaces and
+                   line breaks inside each block. Applied to leaf blocks only —
+                   a container would also print the newlines between tags. */
                 #taf-pdf-export .field-content p,
                 #taf-pdf-export .field-content li,
                 #taf-pdf-export .field-content h1,
@@ -441,6 +594,13 @@ export default function TafFormExport({ submission }: Props) {
                 #taf-pdf-export .field-content th {
                   white-space: pre-wrap !important;
                 }
+
+                /* The editor stores each list item as <li><p>text</p></li>. A
+                   <p> is a block, so the marker printed on a line of its own
+                   above the text ("1." then "User and Data Management").
+                   first-of-type, NOT first-child: the number span is inserted
+                   as the li's first child, which made first-child stop matching
+                   the paragraph. */
                 #taf-pdf-export li > p:first-of-type {
                   display: inline !important;
                   margin: 0 !important;
@@ -451,6 +611,12 @@ export default function TafFormExport({ submission }: Props) {
                   margin: 0 !important;
                   text-indent: 0 !important;
                 }
+
+
+                /* References: every entry flush on the left edge, so [1], [2],
+                   [3] line up. A hanging indent (padding-left + negative
+                   text-indent) put the markers at different offsets whenever an
+                   entry was short or its first line was a marker on its own. */
                 #taf-pdf-export .doc-references p,
                 #taf-pdf-export .doc-references p.doc-ref {
                   font-size: 11pt !important;
@@ -461,6 +627,14 @@ export default function TafFormExport({ submission }: Props) {
                   margin-bottom: 4px !important;
                   line-height: 1.5 !important;
                 }
+
+                /* PLAIN-TEXT VALUES — exactly as typed.
+                   pre-wrap keeps the author's line breaks, indentation and
+                   their own numbering ("1.", "1.1"), which the old
+                   plainTextToHtml list conversion rewrote into <ol>/<li> and
+                   the browser then renumbered.
+                   text-align:left on purpose — justifying would stretch the
+                   indented outline. */
                 #taf-pdf-export .field-content .plain-block,
                 #taf-pdf-export .doc-references .plain-block,
                 #taf-pdf-export .plain-block {
@@ -475,11 +649,16 @@ export default function TafFormExport({ submission }: Props) {
                   hyphens: none !important;
                   -webkit-hyphens: none !important;
                 }
+
+                /* MUST come after the justify block: same specificity + both
+                   !important, so source order decides who wins. */
                 #taf-pdf-export .proposed-title-content,
                 #taf-pdf-export .proposed-title-content * {
                   text-align: center !important;
                   font-weight: bold !important;
                 }
+
+                /* Keep the short headings whole. */
                 #taf-pdf-export .form-title,
                 #taf-pdf-export .committee-title,
                 #taf-pdf-export .committee-subtitle {
@@ -495,7 +674,7 @@ export default function TafFormExport({ submission }: Props) {
 
             <div id="taf-pdf-export">
               <div className="taf-container">
-                {}
+                {/* ── Official form header ─────────────────────────────── */}
                 <table>
                   <colgroup>
                     <col style={{ width: "13%" }} />
@@ -507,7 +686,7 @@ export default function TafFormExport({ submission }: Props) {
                   <tbody>
                     <tr>
                       <td className="text-center align-middle">
-                        {}
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
                         <img
                           src="/batstateu-seal.png"
                           alt="Batangas State University"
@@ -578,13 +757,13 @@ export default function TafFormExport({ submission }: Props) {
                     </tr>
 
                     <tr>
-                      {
-}
+                      {/* The TAF record has no Program field — the form keeps
+                          the line so the office can fill it by hand. */}
                       <td>Program</td>
                       <td colSpan={3}>&nbsp;</td>
                     </tr>
 
-                    {}
+                    {/* ── Proposed title: its own full-width row ─────────── */}
                     <tr>
                       <td colSpan={4} style={{ borderRight: "none" }}>
                         <span
@@ -612,7 +791,7 @@ export default function TafFormExport({ submission }: Props) {
                   </tbody>
                 </table>
 
-                {}
+                {/* ── Narrative sections: blocks, not table rows ─────── */}
                 <div className="fields-container">
                   {fields.map((field) => (
                     <div
@@ -629,7 +808,7 @@ export default function TafFormExport({ submission }: Props) {
                     >
                       {field.variant === "labelBar" ? (
                         <>
-                          {}
+                          {/* Only this line is shaded; the answer stays white. */}
                           <div className="pad-label gray-bg">{field.label}</div>
                           <div className="pad-content field-content indented-content">
                             <FieldValue value={field.value} />
@@ -657,7 +836,7 @@ export default function TafFormExport({ submission }: Props) {
                   ))}
                 </div>
 
-                {}
+                {/* ── Topic Evaluation Committee ─────────────────────── */}
                 <table className="committee-table">
                   <colgroup>
                     <col style={{ width: "45%" }} />

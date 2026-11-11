@@ -1,4 +1,15 @@
 "use client";
+
+// ============================================================
+// SubmissionChat — right-side chat popover between the student
+// who submitted a TAF and each approver (adviser, associate
+// dean, dean, vcrdes). Conversations are SEPARATE per
+// counterparty: the student picks who to talk to via the tab
+// bar; approvers only ever see their own thread with the
+// student. Appears only on submission detail pages. Polls for
+// new messages every few seconds.
+// ============================================================
+
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   getSubmissionChat,
@@ -20,7 +31,7 @@ const ROLE_LABEL: Record<string, string> = {
 
 type Props = {
   submissionId: string;
-
+  /** Sender display name of the current user (fallback while loading). */
   currentUserName?: string;
 };
 
@@ -45,11 +56,13 @@ export default function SubmissionChat({
   const bottomRef = useRef<HTMLDivElement>(null);
   const lastCountRef = useRef(0);
   const isStudent = me?.role === "student";
+
+  // ── Load conversation list + messages ─────────────────────
   const loadConversations = useCallback(async () => {
     const result = await getChatConversations(submissionId);
     if (result.success) {
       setConversations(result.data);
-
+      // Approvers only have one conversation — auto-select it
       if (result.data.length === 1) {
         setActiveRole(result.data[0].role);
       }
@@ -63,6 +76,8 @@ export default function SubmissionChat({
       setOther(result.data.other);
       setMe(result.data.me);
       setError(null);
+
+      // Unread badge: new messages arrived while the chat was closed
       if (!open && result.data.messages.length > lastCountRef.current) {
         setHasUnread(true);
       }
@@ -72,6 +87,8 @@ export default function SubmissionChat({
     }
     setLoading(false);
   }, [submissionId, activeRole, open]);
+
+  // Initial load + poll while open
   useEffect(() => {
     const initial = setTimeout(() => {
       void load();
@@ -85,6 +102,8 @@ export default function SubmissionChat({
       clearInterval(interval);
     };
   }, [load, loadConversations]);
+
+  // Reload messages when switching conversation
   useEffect(() => {
     if (!open) return;
     const t = setTimeout(() => {
@@ -93,11 +112,15 @@ export default function SubmissionChat({
     }, 0);
     return () => clearTimeout(t);
   }, [activeRole, open, load]);
+
+  // Scroll to bottom when messages change
   useEffect(() => {
     if (open) {
       bottomRef.current?.scrollIntoView({ behavior: "smooth" });
     }
   }, [messages, open]);
+
+  // ── Send ──────────────────────────────────────────────────
   async function handleSend() {
     const text = draft.trim();
     if (!text || sending) return;
@@ -131,9 +154,11 @@ export default function SubmissionChat({
       day: "numeric",
     });
   }
+
+  // ── Render ────────────────────────────────────────────────
   return (
     <>
-      {}
+      {/* Floating chat button (bottom-right) */}
       <button
         type="button"
         onClick={() => {
@@ -156,10 +181,10 @@ export default function SubmissionChat({
         )}
       </button>
 
-      {}
+      {/* Popover panel (right side) */}
       {open && (
         <div className="fixed bottom-40 left-4 right-4 z-50 flex h-[70vh] max-h-[480px] w-auto flex-col overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl sm:bottom-24 sm:left-auto sm:right-6 sm:h-[480px] sm:w-[360px]">
-          {}
+          {/* Header */}
           <div className="flex items-center gap-3 border-b bg-[#8B1A1A] px-4 py-3 text-white">
             <div className="flex h-9 w-9 items-center justify-center rounded-full bg-white/20 text-sm font-semibold">
               {other ? other.name.charAt(0).toUpperCase() : "?"}
@@ -182,7 +207,7 @@ export default function SubmissionChat({
             </button>
           </div>
 
-          {}
+          {/* Conversation tabs (student only) */}
           {isStudent && conversations.length > 1 && (
             <div className="flex gap-1 border-b bg-gray-50 px-2 py-1.5 overflow-x-auto">
               {conversations.map((c) => (
@@ -210,7 +235,7 @@ export default function SubmissionChat({
             </div>
           )}
 
-          {}
+          {/* Messages */}
           <div className="flex-1 overflow-y-auto bg-gray-50 px-3 py-4 space-y-3">
             {error && !messages.length && (
               <p className="text-xs text-red-500 text-center py-6">{error}</p>
@@ -266,7 +291,7 @@ export default function SubmissionChat({
             <div ref={bottomRef} />
           </div>
 
-          {}
+          {/* Input */}
           <div className="border-t bg-white px-3 py-2.5">
             {error && (
               <p className="text-[11px] text-red-500 mb-1">{error}</p>

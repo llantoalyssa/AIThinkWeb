@@ -1,9 +1,23 @@
 "use client";
+
+// ============================================================
+// Audit Trail filters. Every control writes to the URL (the server page
+// reads it and re-queries), so filtering is a normal navigation — the
+// result is linkable, refresh-safe and needs no client-side fetching.
+//
+// SHARED by every surface that renders the trail (the department console and
+// the approver roles the console granted `pages.audit`), so it takes the
+// trail's ROUTE as a prop instead of hardcoding the department's: each caller
+// keeps filtering inside its OWN role's chrome.
+// ============================================================
+
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Filter, RotateCcw, Search } from "lucide-react";
 
 import { AUDIT_CATEGORIES, auditActionOptions } from "@/lib/audit";
+
+/** The five filter values, as they live in the URL. */
 export type AuditFilterValues = {
   q: string;
   action: string;
@@ -13,7 +27,7 @@ export type AuditFilterValues = {
 };
 
 type Props = {
-
+  /** This trail's own route — filters navigate here, never to another role's. */
   basePath: string;
   initial: AuditFilterValues;
 };
@@ -50,6 +64,9 @@ export default function AuditTrailFilters({ basePath, initial }: Props) {
     setTo("");
     router.push(base);
   }
+
+  // Action options narrow to the chosen category, so the two selectors can't
+  // contradict each other.
   const actionOptions = category
     ? ACTION_OPTIONS.filter((o) => o.category === category)
     : ACTION_OPTIONS;
@@ -64,9 +81,9 @@ export default function AuditTrailFilters({ basePath, initial }: Props) {
       }}
       className="mb-4 rounded-xl border bg-white p-3"
     >
-      {
-
-}
+      {/* Mobile: a 2-column grid (search full width, then category/action,
+          then the two dates) instead of the desktop row wrapping at arbitrary
+          points into a ragged stack. From sm up it is the original flex row. */}
       <div className="grid grid-cols-2 items-end gap-2 sm:flex sm:flex-wrap">
         <div className="col-span-2 min-w-0 sm:flex-1 sm:min-w-[220px]">
           <label
@@ -166,7 +183,7 @@ export default function AuditTrailFilters({ basePath, initial }: Props) {
           />
         </div>
 
-        {}
+        {/* Buttons share the last row on a phone, sit inline on desktop. */}
         <div className="col-span-2 flex gap-2 sm:contents">
         <button
           type="submit"

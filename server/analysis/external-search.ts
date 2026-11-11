@@ -54,6 +54,15 @@ export async function searchGoogleScholar(
 
     const raw = response as Record<string, unknown>;
 
+    // SerpAPI v2 returns errors in the response body for some failures.
+    // BUT two of those messages are actually LEGITIMATE empty results,
+    // not failures:
+    //   - "Google hasn't returned any results for this query."
+    //   - any "no results" / "No results" phrasing
+    // A niche / original thesis topic often returns zero Scholar hits;
+    // that is a valid "no external matches" outcome, not an API error.
+    // So we treat it as a successful empty search instead of failing the
+    // whole external leg (which would otherwise zero the external score).
     if (raw.error) {
       const errMsg = String(raw.error);
       const isNoResults =

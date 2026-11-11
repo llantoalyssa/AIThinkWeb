@@ -1,4 +1,14 @@
 "use client";
+
+// ============================================================
+// ResearchAnalytics — approval-dashboard analytics for the
+// Associate Dean & Dean. Renders 3 columns of cards (all data is
+// fully-approved TAFs only): Top/Least Referenced Capstones,
+// SDG bar chart, Top similarity, and Field-of-IT bar chart.
+// Every card opens a dialog; the SDG/FoIT dialogs show the chart +
+// a searchable/filterable table of fully approved TAFs + PDF export.
+// ============================================================
+
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
@@ -14,6 +24,9 @@ import { Loader2, X, Search, Download, Award, TrendingDown, TrendingUp, BarChart
 import { IT_FIELDS, normalizeFieldOfIt, rolePath, type UserRole } from "@/lib/constants";
 import { groupSlug } from "@/lib/slug";
 import JournalViewerButton from "@/components/journal-viewer-button";
+
+// Client-side SDG meaning map (mirrors the server's SDG_MEANINGS) so the
+// year-filtered charts can rebuild labels without an extra fetch.
 const SDG_MEANINGS_CLIENT: Record<string, string> = {
   "1": "No Poverty",
   "2": "Zero Hunger",
@@ -33,6 +46,8 @@ const SDG_MEANINGS_CLIENT: Record<string, string> = {
   "16": "Peace, Justice & Strong Institutions",
   "17": "Partnerships for the Goals",
 };
+
+// ── Vertical column bar (bar-graph style) ───────────────────
 function ColumnBar({
   label,
   value,
@@ -70,6 +85,8 @@ function ColumnBar({
     </button>
   );
 }
+
+// ── Column chart container (flexible row of bars) ───────────
 function ColumnChart({
   data,
   color,
@@ -80,11 +97,17 @@ function ColumnChart({
   onSelect?: (key: string) => void;
 }) {
   const max = Math.max(1, ...data.map((d) => d.value));
+  /**
+   * A phone cannot fit 17 tap targets side by side: `flex-1` shrank each bar to
+   * ~18px, which also crushed the labels. Give every bar a usable minimum and
+   * let the row scroll sideways instead — desktop still fits without scrolling
+   * because the min-width stays below the card width.
+   */
   const minWidth = Math.max(data.length * 46, 280);
   return (
-    <div className="-mx-1 overflow-x-auto pb-1">
+    <div className="chart-scroll -mx-1 overflow-x-auto pb-1">
       <div
-        className="flex items-end gap-1 px-1 sm:gap-2"
+        className="chart-track flex items-end gap-1 px-1 sm:gap-2"
         style={{ minWidth: `${minWidth}px` }}
       >
       {data.map((d) => (
@@ -102,6 +125,10 @@ function ColumnChart({
     </div>
   );
 }
+
+// ── Capstone list card (shared row) ─────────────────────────
+// The reference badge is the drill-down: it opens the list of fully approved
+// TAFs behind that count, so the number is never a dead end.
 function CapstoneRow({ c, onOpen }: { c: ReferencedCapstone; onOpen: (c: ReferencedCapstone) => void }) {
   const count = c.referenceCount;
   return (
@@ -113,6 +140,9 @@ function CapstoneRow({ c, onOpen }: { c: ReferencedCapstone; onOpen: (c: Referen
       <button
         type="button"
         onClick={(event) => {
+          // The card this badge sits in opens "Most referenced" on click; without
+          // stopping propagation the badge opened BOTH dialogs at once, which is
+          // the overlap that was reported.
           event.stopPropagation();
           onOpen(c);
         }}
@@ -124,12 +154,16 @@ function CapstoneRow({ c, onOpen }: { c: ReferencedCapstone; onOpen: (c: Referen
     </div>
   );
 }
+
+/** Date shown in the reference drill-down ("—" when the stamp is missing). */
 function formatApprovedDate(iso: string | null): string {
   if (!iso) return "—";
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "—";
   return d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
 }
+
+// ── Approved TAF table (shared by SDG & FoIT dialogs) ───────
 function ApprovedTable({
   rows,
   exportId,
@@ -137,7 +171,7 @@ function ApprovedTable({
 }: {
   rows: ApprovedTaf[];
   exportId: string;
-
+  /** available years for the dropdown ("" = all). */
   years?: string[];
 }) {
   const [q, setQ] = useState("");
@@ -218,6 +252,8 @@ function ApprovedTable({
     </div>
   );
 }
+
+// ── Dialog shell ────────────────────────────────────────────
 function Dialog({
   open,
   onClose,
@@ -230,8 +266,8 @@ function Dialog({
   onClose: () => void;
   title: React.ReactNode;
   children: React.ReactNode;
-  exportTarget?: string;
-
+  exportTarget?: string; // element id to print
+  /** Content width. "md" = max-w-4xl (default), "lg" = max-w-5xl, "xl" = max-w-6xl. */
   size?: "md" | "lg" | "xl";
 }) {
   const [printing, setPrinting] = useState(false);
@@ -246,14 +282,28 @@ function Dialog({
       exportTarget || "analytics-export-root",
     );
     if (!source) return;
+
+    // PREVIOUS approach printed the element in place with `position: absolute`
+    // + `visibility`. That blanked the output because the target lives inside
+    // the dialog's `overflow-hidden`/`overflow-y-auto` containers: taking it
+    // out of flow collapses those containers so the print is clipped to
+    // nothing. Instead, CLONE the content into a top-level node appended to
+    // <body> (no overflow/visibility ancestors), hidden on screen and shown
+    // only for print. `print-color-adjust: exact` keeps the div-based bar
+    // charts colored (without it Chromium drops background colors → blank bars).
     document.getElementById("analytics-print-root")?.remove();
     const clone = document.createElement("div");
     clone.id = "analytics-print-root";
     clone.innerHTML = source.innerHTML;
-    clone.style.display = "none";
+    clone.style.display = "none"; // hidden on screen; revealed only in @media print
     clone.style.printColorAdjust = "exact";
     (clone.style as unknown as Record<string, string>).webkitPrintColorAdjust =
       "exact";
+
+    // Physically drop screen-only chrome from the clone. Relying on
+    // `display: none` alone left the on-screen hints ("… click a bar …") in the
+    // printed page whenever the rule did not match, so they are removed here —
+    // the exported DOM simply does not contain them.
     clone.querySelectorAll(".print-hide").forEach((node) => node.remove());
 
     document.body.appendChild(clone);
@@ -261,24 +311,88 @@ function Dialog({
     const style = document.createElement("style");
     style.id = "analytics-print-style";
     style.textContent = `
-      @page { size: auto; margin: 0; }
+      /* A zero page margin is the ONLY reliable way to suppress the browser's
+         own header/footer (page number, URL, date): those live in the margin
+         box, so with no margin they are not drawn. The content padding below
+         replaces the lost margin. */
+      @page { size: A4 portrait; margin: 14mm 12mm; }
       @media print {
         body > *:not(#analytics-print-root) { display: none !important; }
         #analytics-print-root {
           display: block !important;
           width: 100% !important;
           max-width: 100% !important;
-          padding: 12mm 10mm !important;
+          /* Real @page margins now carry the inset, and unlike padding they
+             repeat on EVERY page — a table continuing onto page 2 no longer
+             starts flush against the paper edge. */
+          padding: 0 !important;
           -webkit-print-color-adjust: exact !important;
           print-color-adjust: exact !important;
         }
         #analytics-print-root * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+        /* Interactive controls (Reset buttons, search/year filters) and the
+           on-screen "click a bar" hints are chrome — never in the export. */
         #analytics-print-root .print-hide { display: none !important; }
-
+        /* Blocks that exist ONLY in the printed copy (title + description). */
         #analytics-print-root .export-only { display: block !important; }
-
-        #analytics-print-root tr { break-inside: avoid; page-break-inside: avoid; }
+        /* TABLES ON PAPER.
+           Two things used to break here:
+           • the table kept its on-screen min-width, so long rows were cut off at
+             the right paper edge;
+           • a row larger than the space left was split by the paginator, and the
+             repeated header then appeared underneath a half row, which read as a
+             duplicated header.
+           Fixed layout + wrapping cells keeps the table inside the page, and a
+           row is never split across pages. */
+        #analytics-print-root table {
+          width: 100% !important;
+          min-width: 0 !important;
+          max-width: 100% !important;
+          table-layout: fixed !important;
+        }
+        #analytics-print-root th,
+        #analytics-print-root td {
+          overflow-wrap: anywhere !important;
+          word-break: break-word !important;
+        }
         #analytics-print-root thead { display: table-header-group; }
+        #analytics-print-root thead tr { break-after: avoid; page-break-after: avoid; }
+        #analytics-print-root tbody tr,
+        #analytics-print-root tr {
+          break-inside: avoid !important;
+          page-break-inside: avoid !important;
+        }
+
+        /* CHARTS MUST FIT THE PAGE.
+           The chart row is a sideways-scroll container on purpose (17 SDG bars
+           need ~46px each on a phone). Printed, that scroll box clipped every
+           bar past the printable width — the export showed a cut chart and no
+           way to reach the rest. Scrolling is meaningless on paper, so the
+           container is released and the bars share the page width instead. */
+        #analytics-print-root .chart-scroll,
+        #analytics-print-root .overflow-x-auto,
+        #analytics-print-root .overflow-y-auto {
+          overflow: visible !important;
+          margin-left: 0 !important;
+          margin-right: 0 !important;
+          max-width: 100% !important;
+        }
+        #analytics-print-root .chart-track {
+          min-width: 0 !important;
+          width: 100% !important;
+          max-width: 100% !important;
+          /* 17 bars squeezed into one printed row are ~33px wide and their
+             labels become unreadable. Wrapping keeps every bar a usable width
+             and still fits the page — no scrollbar, nothing cut. */
+          flex-wrap: wrap !important;
+          justify-content: flex-start !important;
+          row-gap: 10px !important;
+        }
+        #analytics-print-root .chart-track > * {
+          flex: 1 1 56px !important;
+          min-width: 0 !important;
+          max-width: 96px !important;
+        }
       }`;
     document.head.appendChild(style);
     setPrinting(true);
@@ -293,6 +407,9 @@ function Dialog({
   }
 
   return (
+    /* On a phone a centred 90vh card with 16px gutters wastes the screen: the
+       chart and the table both need width. Full-bleed below sm, the familiar
+       centred card from sm up. */
     <div className="fixed inset-0 z-[80] flex items-stretch justify-center sm:items-center sm:p-4">
       <div className="absolute inset-0 bg-black/40" onClick={onClose} />
       <div
@@ -321,6 +438,8 @@ function Dialog({
     </div>
   );
 }
+
+// ── Main component ──────────────────────────────────────────
 export default function ResearchAnalytics({
   role,
   userId,
@@ -328,22 +447,42 @@ export default function ResearchAnalytics({
   hrefMode = "flat",
 }: {
   role: UserRole;
-
+  /** URL user id — used to build links into the approved-TAF viewer. */
   userId: string;
+  /**
+   * Where a clicked row opens its TAF. A SERIALIZABLE descriptor, not a
+   * callback: this component is rendered by SERVER pages too, and a function
+   * prop cannot cross that boundary.
+   *
+   *   "flat"  — /dashboard/<role>/<id>/submission/<id>   (approver dashboards)
+   *   "group" — /dashboard/adviser/<id>/group/<slug>/submission/<id>
+   *   "none"  — rows are read-only (no route to open a TAF in this context)
+   */
   hrefMode?: "flat" | "group" | "none";
+  /**
+   * Optional server-supplied analytics (bundled into the dashboard's single
+   * mount action). When given, the mount fetch is skipped and the panel paints
+   * immediately; when absent or null it fetches exactly as before.
+   */
   initialData?: AnalyticsData | null;
 }) {
   const router = useRouter();
   const [data, setData] = useState<AnalyticsData | null>(initialData ?? null);
   const [loading, setLoading] = useState(!initialData);
   const [err, setErr] = useState<string | null>(null);
-
+  // Which capstone's reference badge was clicked (null = dialog closed).
   const [refDetail, setRefDetail] = useState<ReferencedCapstone | null>(null);
+
+  /** Open the drill-down without leaving the "View all" dialog stacked behind it. */
   function openRefDetail(c: ReferencedCapstone) {
     setShowMore(null);
     setRefDetail(c);
   }
+
+  /** Whether a drill-down row can actually open its TAF. */
   const canOpenTaf = hrefMode !== "none" && Boolean(userId);
+
+  /** Clicking a row opens that TAF in the approved (read-only) viewer. */
   function openApprovedTaf(submissionId: string, groupName = "") {
     if (!canOpenTaf || !submissionId) return;
     if (hrefMode === "group") {
@@ -355,13 +494,15 @@ export default function ResearchAnalytics({
     router.push(`${rolePath(role)}/${userId}/submission/${submissionId}?from=approved`);
   }
   const didLoad = useRef(!!initialData);
+
+  // dialog state
   const [showMore, setShowMore] = useState<"most" | "least" | null>(null);
   const [sdgDialog, setSdgDialog] = useState(false);
   const [foitDialog, setFoitDialog] = useState(false);
-
+  // selected SDG/FoIT for the table filter (bar-clicked)
   const [selectedSdg, setSelectedSdg] = useState<SDGCount | null>(null);
   const [selectedField, setSelectedField] = useState<FieldCount | null>(null);
-
+  // year filter for the charts + tables ("all" or a specific year)
   const [yearFilter, setYearFilter] = useState<string>("all");
 
   useEffect(() => {
@@ -392,6 +533,9 @@ export default function ResearchAnalytics({
       </div>
     );
   }
+
+  // ── Year-filtered derived data ────────────────────────────
+  // Distinct years (sorted desc) from approved TAF approval dates.
   const years = Array.from(
     new Set(data.approvedTafs.map((t) => t.year).filter((y): y is string => !!y)),
   ).sort((a, b) => parseInt(b) - parseInt(a));
@@ -399,6 +543,8 @@ export default function ResearchAnalytics({
   const yearFilteredApproved = data.approvedTafs.filter((t) =>
     yearFilter === "all" ? true : t.year === yearFilter,
   );
+
+  // Recompute SDG / field counts + highest/lowest from the filtered set.
   const sdgCounts: SDGCount[] = (() => {
     const agg: Record<string, number> = {};
     for (const t of yearFilteredApproved) {
@@ -412,6 +558,8 @@ export default function ResearchAnalytics({
         }
       }
     }
+    // Always render ALL 17 SDGs (zero counts included) in canonical order so
+    // the chart/dialog never omits an SDG with no TAFs.
     return Array.from({ length: 17 }, (_, i) => {
       const code = String(i + 1);
       return {
@@ -426,16 +574,16 @@ export default function ResearchAnalytics({
   const fieldCounts: FieldCount[] = (() => {
     const agg: Record<string, number> = {};
     for (const t of yearFilteredApproved) {
-
+      // Normalize stored/free-text values onto the canonical IT_FIELDS.
       const f = normalizeFieldOfIt(t.fieldOfIt);
       agg[f] = (agg[f] || 0) + 1;
     }
-
+    // Always render ALL nine canonical IT fields (zero counts included).
     const out: FieldCount[] = IT_FIELDS.map((field) => ({
       field,
       count: agg[field] || 0,
     }));
-
+    // Append Unclassified only if some approved TAF didn't map to a field.
     if ((agg["Unclassified"] || 0) > 0) {
       out.push({ field: "Unclassified", count: agg["Unclassified"] });
     }
@@ -463,6 +611,14 @@ export default function ResearchAnalytics({
       : null;
   const highestSim = toSim(highestSimilarity);
   const lowestSim = toSim(lowestSimilarity);
+
+  // ── Table rows for the SDG dialog ───────────────────────
+  // Default view shows ALL year-filtered approved TAFs; a selected bar
+  // narrows it to just that SDG. A "Reset" button clears the selection.
+  /**
+   * Date printed in the exported file's header. Computed once per mount so the
+   * value cannot change between the screen render and the print clone.
+   */
   const exportStamp = new Date().toLocaleDateString("en-PH", {
     timeZone: "Asia/Manila",
     year: "numeric",
@@ -484,9 +640,16 @@ export default function ResearchAnalytics({
         (t) => normalizeFieldOfIt(t.fieldOfIt) === selectedField.field,
       )
     : yearFilteredApproved;
+
+  // The dashboard CARDS preview only the TOP 5 bars; the dialogs show ALL
+  // (17 SDGs / 9 IT fields). Keeps the cards compact without hiding data.
   const topSdgCounts = [...sdgCounts].sort((a, b) => b.count - a.count).slice(0, 5);
   const topFieldCounts = [...fieldCounts].sort((a, b) => b.count - a.count).slice(0, 5);
+
+  // VCRDES: hide the Most/Least Referenced Capstone Studies cards.
   const showCapstones = role !== "vcrdes";
+
+  // Card bodies reused by the per-role row layouts below.
   const sdgCard = (
     <Card title="Sustainable Development Goals" icon={<Target />} subtitle="Targeted by Topics · click a bar to see its TAFs" onClick={() => setSdgDialog(true)}>
       {sdgCounts.length === 0 ? (
@@ -559,7 +722,7 @@ export default function ResearchAnalytics({
 
   return (
     <div>
-      {}
+      {/* ── Header ───────────────────────────────────────── */}
       <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
         <div>
           <h2 className="text-xl font-bold text-[#333] flex items-center gap-2">
@@ -590,7 +753,7 @@ export default function ResearchAnalytics({
         </div>
       </div>
 
-      {}
+      {/* ── KPI strip ────────────────────────────────────── */}
       <div className="mb-5 grid grid-cols-2 gap-3 lg:grid-cols-4">
         <KpiCard label="Approved TAFs" value={yearFilteredApproved.length} icon={<CheckCircle2 className="h-4 w-4" />} tint="bg-green-500" />
         <KpiCard label="SDGs Targeted" value={sdgCounts.filter((s) => s.count > 0).length} icon={<Target className="h-4 w-4" />} tint="bg-[#8B1A1A]" />
@@ -605,17 +768,23 @@ export default function ResearchAnalytics({
 
       {role === "vcrdes" ? (
         <>
-          {}
+          {/* Row: SDG + Field of IT side by side */}
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-12 mb-4">
             <div className="lg:col-span-6">{sdgCard}</div>
             <div className="lg:col-span-6">{foitCard}</div>
           </div>
-          {}
+          {/* Row: Top & Bottom similarity (full width) */}
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-12">
             <div className="lg:col-span-12">{simCard}</div>
           </div>
         </>
       ) : (
+        /* ONE grid with explicit mobile ordering.
+           Desktop keeps its two rows (SDG | Similarity, Field of IT | Capstones),
+           but on a phone the stacked order is SDG → Field of IT → Similarity →
+           Capstones, so the two CHART cards sit together instead of being split
+           by the similarity list. `order-*` only reorders the stacked column;
+           from lg up the order classes restore the row layout. */
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-12">
           <div className="order-1 lg:col-span-7">{sdgCard}</div>
           <div className="order-2 lg:order-3 lg:col-span-7">{foitCard}</div>
@@ -624,7 +793,7 @@ export default function ResearchAnalytics({
         </div>
       )}
 
-      {}
+      {/* ── Dialog: More / Least referenced ──────────────── */}
       <Dialog open={showMore !== null} onClose={() => setShowMore(null)} title={showMore === "most" ? "Most Referenced Capstone Studies" : "Least Referenced Capstone Studies"}>
         <div className="space-y-2">
           {(showMore === "most" ? data.mostReferenced : data.leastReferenced).length === 0 ? (
@@ -652,10 +821,10 @@ export default function ResearchAnalytics({
         </div>
       </Dialog>
 
-      {}
-      {
-
-}
+      {/* ── Dialog: which fully approved TAFs reference this capstone ── */}
+      {/* The count on the badge IS the length of this list, so clicking
+          "5×" always shows exactly five rows. Rows open the TAF itself in the
+          approved (read-only) viewer. */}
       <Dialog
         open={refDetail !== null}
         onClose={() => setRefDetail(null)}
@@ -732,7 +901,9 @@ export default function ResearchAnalytics({
           </div>
         )}
       </Dialog>
-      {}
+
+
+      {/* ── Dialog: SDG ──────────────────────────────────── */}
       <Dialog
         open={sdgDialog}
         onClose={() => setSdgDialog(false)}
@@ -744,7 +915,7 @@ export default function ResearchAnalytics({
             Targeted by Topics — click a bar to see the fully approved TAFs for that SDG.
           </p>
 
-          {}
+          {/* Printed copy only: what this file IS, and where it came from. */}
           <div className="export-only mb-4 hidden border-b border-gray-200 pb-3">
             <h1 className="text-lg font-bold text-[#333]">
               Sustainable Development Goals — Fully Approved TAFs
@@ -754,7 +925,7 @@ export default function ResearchAnalytics({
               Development Goal. Generated {exportStamp} · College of Informatics and Computing Sciences, Batangas State University TNEU – JPLPC Malvar.
             </p>
           </div>
-          {}
+          {/* Chart */}
           <div className="mb-4">
             <ColumnChart
               color="#8B1A1A"
@@ -767,7 +938,7 @@ export default function ResearchAnalytics({
           </div>
           {sdgCounts.length === 0 && <Empty text="No SDG data yet." />}
 
-          {}
+          {/* Selected SDG banner */}
           {selectedSdg && (
             <div className="mb-3 flex items-center gap-2 rounded-xl border border-[#8B1A1A]/20 bg-[#8B1A1A]/5 px-3 py-2.5">
               <span className="rounded-full bg-[#8B1A1A] px-2.5 py-0.5 text-xs font-bold text-white">
@@ -784,8 +955,8 @@ export default function ResearchAnalytics({
             </div>
           )}
 
-          {
-}
+          {/* Table — the heading is on-screen context only. The export carries
+              its own title block, so this line is scrubbed from the printed copy. */}
           <h4 className="print-hide mb-2 text-sm font-semibold text-[#333]">
             Fully Approved TAFs
             {selectedSdg ? ` · ${selectedSdg.label}` : " · All SDGs"}
@@ -795,7 +966,7 @@ export default function ResearchAnalytics({
         </div>
       </Dialog>
 
-      {}
+      {/* ── Dialog: Field of IT ───────────────────────────── */}
       <Dialog
         open={foitDialog}
         onClose={() => setFoitDialog(false)}
@@ -808,7 +979,7 @@ export default function ResearchAnalytics({
             Targeted by Topics — click a bar to see the fully approved TAFs for that field.
           </p>
 
-          {}
+          {/* Printed copy only. */}
           <div className="export-only mb-4 hidden border-b border-gray-200 pb-3">
             <h1 className="text-lg font-bold text-[#333]">
               Field of Information Technology — Fully Approved TAFs
@@ -854,6 +1025,8 @@ export default function ResearchAnalytics({
     </div>
   );
 }
+
+// ── Small card wrapper ─────────────────────────────────────
 function Card({
   title,
   subtitle,
@@ -866,7 +1039,7 @@ function Card({
   subtitle?: string;
   icon: React.ReactNode;
   onClick?: () => void;
-
+  /** optional right-aligned "View all" style chip */
   actionLabel?: string;
   children: React.ReactNode;
 }) {
@@ -900,6 +1073,8 @@ function Card({
     </div>
   );
 }
+
+// ── KPI stat card ───────────────────────────────────────────
 function KpiCard({
   label,
   value,
@@ -925,6 +1100,8 @@ function KpiCard({
     </div>
   );
 }
+
+// ── Similarity row (highest/lowest) ─────────────────────────
 function SimilarityRow({
   label,
   entry,

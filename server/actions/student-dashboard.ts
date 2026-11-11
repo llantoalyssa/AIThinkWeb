@@ -1,5 +1,12 @@
 "use server";
 
+// ============================================================
+// Student dashboard data action — aggregates everything the student
+// dashboard needs in one call:
+//   • monthly total-TAF counts (for the line chart, month filterable)
+//   • the user's lowest- and highest-similarity TAFs
+//   • pinned TAFs and most-recent TAFs (with similarity + title)
+// ============================================================
 
 import { createClient } from "@/server/supabase/server";
 import { getCurrentUser } from "./auth";
@@ -13,15 +20,16 @@ export type DashboardTaf = {
 };
 
 export type StudentDashboardData = {
-  
+  /** Total TAFs generated per calendar month (YYYY-MM) EXCLUDING
+   *  months with zero, or including all requested months. */
   monthlyCounts: { month: string; count: number }[];
-  
+  /** The lowest-similarity TAF across all analyzed versions. */
   lowest: DashboardTaf | null;
-  
+  /** The highest-similarity TAF across all analyzed versions. */
   highest: DashboardTaf | null;
-  
+  /** Pinned TAFs (most recently visited first). */
   pinned: DashboardTaf[];
-  
+  /** Most recent TAFs (most recently visited first, 5). */
   recent: DashboardTaf[];
 };
 
@@ -61,7 +69,9 @@ export async function getStudentDashboardData(): Promise<StudentDashboardResult>
 
   const tafIds = tafRows.map((t) => t.id);
 
-  // 2. Analysis scores for these TAFs (latest version per TAF). 
+  // 2. Analysis scores for these TAFs (latest version per TAF). Each TAF
+  //    may have many analysis rows; pick the LOWEST combined_score per TAF
+  //    after fetching the most recent row(s). We fetch all and reduce.
   let analysisRows: { taf_id: string; combined_score: number | null }[] = [];
   if (tafIds.length > 0) {
     const { data, error } = await supabase
@@ -79,6 +89,10 @@ export async function getStudentDashboardData(): Promise<StudentDashboardResult>
     }
   }
 
+  // map taf_id -> { lowest & latest combined score across versions }
+  // analysisRows come sorted analyzed_at DESC, so the FIRST occurrence of a
+  // taf_id is its LATEST version. On first sight we set latest=s; subsequent
+  // rows only lower `lowest`. This gives both correctly.
   const scoreByTaf = new Map<
     string,
     { lowest: number; latest: number }
@@ -114,6 +128,9 @@ export async function getStudentDashboardData(): Promise<StudentDashboardResult>
   }
 
   // 4. Monthly counts for the line chart — SUBMITTED TAFs only.
+  // A TAF counts once it has been submitted to a group (group_taf_submissions
+  // row owned by this student). We chart by the SUBMISSION month, not the TAF
+  // creation month, so the line reflects actual submitted-TAF activity.
   const { data: submissions, error: subErr } = await supabase
     .from("group_taf_submissions")
     .select("taf_id, submitted_at")
@@ -136,6 +153,11 @@ export async function getStudentDashboardData(): Promise<StudentDashboardResult>
       monthly.set(key, (monthly.get(key) || 0) + 1);
     }
   }
+  // Build a CONTINUOUS monthly series from the first submission month to the
+  // last, filling months with no submissions as 0. Plotting only the months
+  // that had data collapsed the gaps, so the line jumped between unrelated
+  // dates — now every point sits on its real month and the line follows the
+  // actual submission timeline.
   const monthlyCounts: { month: string; count: number }[] = [];
   if (monthly.size > 0) {
     const keys = Array.from(monthly.keys()).sort();

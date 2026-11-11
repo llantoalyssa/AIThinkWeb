@@ -1,3 +1,19 @@
+// ============================================================
+// AuditTrailView — the Audit Trail's table, extracted from the department
+// console's server page so that EVERY surface renders one table instead of a
+// copy: the department's /audit-trail and the approver roles' own /audit-trail
+// (an account the console granted `pages.audit`).
+//
+// READ-ONLY BY CONSTRUCTION. This component renders no control that can change
+// a row: there is no edit, no delete and no "new entry", because the audit log
+// is append-only and migration 051/057 grant SELECT only. A granted approver
+// therefore sees exactly what the department sees — and can do nothing with it.
+//
+// Not marked "use client": it is pure presentation, so the department's SERVER
+// page renders it on the server (no client fetch, no spinner) while the approver
+// route passes it through the client frame as server-rendered children.
+// ============================================================
+
 import Link from "next/link";
 import { ChevronLeft, ChevronRight, ScrollText } from "lucide-react";
 
@@ -6,6 +22,8 @@ import { AUDIT_CATEGORIES, auditActionLabel, auditCategoryLabel } from "@/lib/au
 import AuditTrailFilters, {
   type AuditFilterValues,
 } from "@/components/audit-trail-filters";
+
+/** One fixed display timezone so server and client renders always agree. */
 const TZ = "Asia/Manila";
 
 function fmtDateTime(iso: string): string {
@@ -33,13 +51,18 @@ function first(v: string | string[] | undefined): string {
 }
 
 export type AuditSearch = {
-
+  /** 1-based page requested by the URL. */
   page: number;
-
+  /** The five filter values, ready for the filter form. */
   filters: AuditFilterValues;
-
+  /** The same values as a query for getAuditLogs(). */
   query: AuditLogQuery;
 };
+
+/**
+ * URLSearchParams → the query the trail is read with. Shared by every caller so
+ * a filter the department honours cannot be ignored by an approver's route.
+ */
 export function auditSearchFromParams(
   searchParams: Record<string, string | string[] | undefined>,
 ): AuditSearch {
@@ -72,13 +95,15 @@ export default function AuditTrailView({
   description = "Sign-ins, submissions, deletions, account creation and group membership changes.",
 }: {
   result: AuditLogPage;
-
+  /** THIS trail's route — pagination and filters stay inside the caller's role. */
   basePath: string;
   filters: AuditFilterValues;
   description?: string;
 }) {
   const totalPages =
     result.success ? Math.max(Math.ceil(result.total / result.perPage), 1) : 1;
+
+  /** Current filters + a page number → link that keeps the filters applied. */
   function pageHref(target: number): string {
     const p = new URLSearchParams();
     if (filters.q) p.set("q", filters.q);
@@ -90,6 +115,16 @@ export default function AuditTrailView({
     const qs = p.toString();
     return `${basePath}${qs ? `?${qs}` : ""}`;
   }
+
+  /**
+   * Newest first, unconditionally.
+   *
+   * The query already asks for `created_at DESC`, but Postgres `now()` is the
+   * TRANSACTION time: rows written by one action (bulk delete, an approval that
+   * logs two events) share a timestamp, and ties come back in arbitrary order —
+   * which reads as "the trail is not sorted". Sorting here makes the visible
+   * order deterministic instead of relying on the planner.
+   */
   const rows = result.success
     ? [...result.rows].sort(
         (a, b) =>
@@ -122,9 +157,9 @@ export default function AuditTrailView({
         </div>
       ) : (
         <>
-          {
-
-}
+          {/* Phones: a card per event. The table needs ~900px; on a phone it
+              scrolled sideways and the action, the person and the description
+              were never visible together. */}
           <div className="divide-y rounded-xl border bg-white sm:hidden">
             {rows.map((row) => (
               <div key={`m-${row.id}`} className="px-3 py-3">

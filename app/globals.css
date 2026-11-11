@@ -128,10 +128,16 @@
     @apply font-sans;
   }
 }
+
+/* ── Rich text content (TipTap editor + HTML display) ────────────── */
 .rich-text-content {
   font-size: 0.875rem;
   line-height: 1.7;
   color: #333;
+  /* Reference entries carry DOIs and URLs, which have no natural break
+     opportunity — without this they spilled outside the field card. Both
+     properties are inherited, so this covers every descendant (including the
+     hanging-indent <p class="doc-ref"> entries). */
   overflow-wrap: anywhere;
   word-break: break-word;
   min-width: 0;
@@ -145,6 +151,10 @@
 .rich-text-content > *:last-child {
   margin-bottom: 0;
 }
+
+/* Body copy reads like a paper: justified with a first-line indent, tight
+   bottom spacing so consecutive paragraphs stay visually grouped. The first
+   paragraph under a heading is flush; list items are never indented. */
 .rich-text-content p {
   margin: 0 0 0.35em;
   text-align: justify;
@@ -157,6 +167,9 @@
 .rich-text-content li > p {
   text-indent: 0;
 }
+
+/* ACM numbered reference entries — hanging indent so the [n] markers line up
+   on the left edge, the way a reference list is typeset. */
 .rich-text-content p.doc-ref {
   padding-left: 2.2em;
   text-indent: -2.2em;
@@ -251,6 +264,8 @@
 .rich-text-content s {
   text-decoration: line-through;
 }
+
+/* Placeholder styling for the editor (TipTap renders .is-empty p) */
 .rich-text-content p.is-editor-empty:first-child::before {
   content: attr(data-placeholder);
   color: #9ca3af;
@@ -258,13 +273,29 @@
   height: 0;
   pointer-events: none;
 }
+
+/* Transient amber flash overlay shown on the student's editable TAF
+   when they click an annotated comment. Appended to body, so the
+   keyframes must be global (not scoped to the component). */
 @keyframes annotTransitionPulse {
   0%, 100% { transform: scale(1); }
   50% { background: rgba(251, 191, 36, 0.75); transform: scale(1.03); }
 }
+
+/* ── Mobile safe-area clearance ──────────────────────────────────────
+   Used by the bottom nav on every dashboard page. Without it the nav sits
+   under the iPhone home indicator, so the last row of buttons can't be
+   tapped. Requires viewport-fit=cover (set in app/layout.tsx) — otherwise
+   env(safe-area-inset-*) reports 0. */
 .safe-area-bottom {
   padding-bottom: env(safe-area-inset-bottom);
 }
+
+/* Content must clear the mobile bottom nav (which is `md:hidden` and ~4rem
+   tall plus the iOS inset). Applied to the scroll container itself, so the
+   padding sits inside the scrollable area and the last row of content — an
+   approval bar, a card's action buttons — is never trapped under the nav.
+   Desktop has no bottom nav, so this is mobile-only. */
 @media (max-width: 767.98px) {
   .pb-mobile-nav {
     padding-bottom: calc(4.5rem + env(safe-area-inset-bottom));

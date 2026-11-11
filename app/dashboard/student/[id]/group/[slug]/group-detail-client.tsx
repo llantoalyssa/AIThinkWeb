@@ -18,6 +18,7 @@ import {
 } from '@/server/actions/group-submissions'
 import RecentTafs from '@/components/recent-tafs'
 import SidebarCollapseHandle from "@/components/sidebar-collapse-handle";
+import StudentNotificationsBell from '@/components/student-notifications-bell'
 import { UserMenu } from '@/components/user-menu'
 import { useUnreadNotifications } from '@/hooks/use-unread-notifications'
 import { Button } from '@/components/ui/button'
@@ -276,6 +277,9 @@ export default function StudentGroupDetailPage({
           AIThink
         </h1>
 
+        {/* One bell on every student page — the header was inconsistent: it
+            appeared on the dashboard/TAF/profile only. */}
+        <StudentNotificationsBell userId={userId} />
         <UserMenu user={currentUser} userId={userId} routeBase="/dashboard/student" />
       </header>
 

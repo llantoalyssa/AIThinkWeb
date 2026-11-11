@@ -1,4 +1,16 @@
-
+// ============================================================
+// /dashboard/department/[id]/admin-analytics — the department console's own
+// overview. DEPARTMENT ONLY (it is not a grantable page).
+//
+// A SERVER page: the numbers are resolved before the first paint, and the range
+// lives in the URL (?range=today|month|year|all) so a view is linkable and
+// survives a refresh. No client fetch, no spinner.
+//
+// "Active users" is the one number that cannot come from a table policy: it
+// reads auth.users.last_sign_in_at with the service-role client (see
+// server/actions/admin-analytics.ts), which is why that action re-verifies the
+// caller is a department account before creating an elevated client.
+// ============================================================
 
 import { redirect } from "next/navigation";
 import {

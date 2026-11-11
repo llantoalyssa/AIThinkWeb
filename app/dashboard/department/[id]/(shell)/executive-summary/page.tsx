@@ -1,3 +1,13 @@
+// ============================================================
+// /dashboard/department/[id]/executive-summary — the college-wide Executive
+// Summary, for the department (a default since migration 053).
+//
+// The component is the dean's own. The DATA scope is decided by RLS, and the
+// department may read every submission (migration 055), so this report means
+// what its title says for this role — unlike an adviser, whose rows RLS would
+// filter down to their own groups, which is why `executive_summary.view` is not
+// offered to advisers in the catalogue (migration 061).
+// ============================================================
 
 import { redirect } from "next/navigation";
 import { ShieldAlert } from "lucide-react";

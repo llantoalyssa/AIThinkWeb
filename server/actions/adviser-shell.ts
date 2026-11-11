@@ -1,5 +1,21 @@
 "use server";
 
+// ============================================================
+// Adviser shell — ONE round trip per page.
+//
+// Why this exists: every adviser page used to fire several server
+// actions on mount (identity + groups + students + notifications +
+// pending approvals). Server actions are QUEUED, so N calls cost N
+// sequential browser round trips, and that queue was the bulk of the
+// click-to-content delay (the group page was the worst: 5 queued calls,
+// ~3s before anything appeared). Composing them HERE keeps the client to
+// a single request; the queries inside still run in parallel — but
+// server-side, where each is a short DB hop rather than a
+// client → server → client cycle.
+//
+// Student equivalent lives in ./shell-data.ts (owned separately).
+// ============================================================
+
 import { getCurrentUser, type CurrentUser } from "./auth";
 import { getGrantedPermissions } from "./permissions";
 import {
@@ -25,7 +41,10 @@ import {
   type SubmissionWithAnalysis,
 } from "./group-submissions";
 
-
+// ── Dashboard (/dashboard/adviser/[id]) ──────────────────────
+// Was: getCurrentUser → then Promise.all(groups, students, pending, notifs)
+// = 1 + 4 queued browser round trips. Now: 1, with all five queries
+// running in parallel server-side.
 export type AdviserDashboardData =
   | {
       success: true;
@@ -38,13 +57,19 @@ export type AdviserDashboardData =
       /** Pending-TAF count per group id, for the cards' badges. */
       pendingByGroup: Record<string, number>;
       pendingApprovals: ApprovalListItem[];
-
+      /**
+       * The permission keys this account effectively holds. The adviser's side
+       * nav is built from them: every granted page (Research Analytics,
+       * Approved TAF, Journals, Audit Trail) is an item, and without the list
+       * those grants appeared nowhere.
+       */
       permissions: string[];
     }
   | { success: false; error: string };
 
 export async function getAdviserDashboardData(): Promise<AdviserDashboardData> {
-
+  // Identity first is unnecessary here: every one of these re-authenticates
+  // internally, so all six can go out together.
   const [
     user,
     notifications,
@@ -76,13 +101,16 @@ export async function getAdviserDashboardData(): Promise<AdviserDashboardData> {
     memberCounts: memberCountsResult.success ? memberCountsResult.counts : {},
     pendingByGroup: pendingGroupsResult.success ? pendingGroupsResult.counts : {},
     pendingApprovals: pendingResult.success ? pendingResult.data : [],
-
+    // The keys this account holds — the side nav needs them to show a granted
+    // page (Research Analytics / Approved TAF / Journals / Audit Trail). One
+    // extra server-side hop inside the SAME request, never a browser round trip.
     permissions: await getGrantedPermissions(user.id),
   };
 }
 
 
-
+// ── Notifications (/dashboard/adviser/[id]/notifications) ────
+// Was: 1 + 2 queued round trips. Now: 1.
 export type AdviserNotificationsData =
   | {
       success: true;
@@ -117,12 +145,17 @@ export async function getAdviserNotificationsData(): Promise<AdviserNotification
   };
 }
 
-
+// ── Group detail (/dashboard/adviser/[id]/group/[slug]) ──────
+// Used by the SERVER page (see app/dashboard/adviser/[id]/group/[slug]).
+// Was: 5 queued browser round trips (identity, unread, group-by-slug, then
+// students + submissions). Now: zero — this runs before the RSC payload
+// is sent.
 export type AdviserGroupData =
   | {
       success: true;
       user: CurrentUser;
       unreadCount: number;
+      /** null when the slug matches no group for this adviser. */
       group: AdvisoryGroup | null;
       students: GroupStudent[];
       submissions: GroupSubmission[];
@@ -171,6 +204,8 @@ export async function getAdviserGroupData(
   };
 }
 
+// ── Submission review (/dashboard/adviser/[id]/group/[slug]/submission/[id])
+// Was: 1 + 1 + 1 queued round trips (identity, submission, unread). Now: 1.
 export type AdviserSubmissionData =
   | {
       success: true;

@@ -1,5 +1,11 @@
 "use server";
 
+// ============================================================
+// Research Analytics — shared by Associate Dean & Dean.
+// Aggregates data from FULLY-APPROVED TAF submissions so the
+// analytics reflect finalized research output (and RLS lets these
+// approvers read approved submissions + their analysis).
+// ============================================================
 
 import { createClient } from "@/server/supabase/server";
 import { getCurrentUser } from "@/server/actions/auth";
@@ -40,6 +46,11 @@ export type ReferencedCapstone = {
   year: string | null;
   /** how many approved analyses reference this capstone */
   referenceCount: number;
+  /**
+   * The fully approved TAFs behind that count — one entry per TAF, so the badge
+   * can be drilled into. These are the same rows `referenceCount` is summed
+   * from, so the two can never disagree.
+   */
   referencedBy: ReferencedByTaf[];
 };
 
@@ -85,6 +96,7 @@ export type AnalyticsResult =
   | { success: false; error: string };
 
 // ── SDG meaning map (UN Sustainable Development Goals) ──────
+// (module-internal — a "use server" file may only export async functions)
 const SDG_MEANINGS: Record<string, string> = {
   "1": "No Poverty",
   "2": "Zero Hunger",
@@ -137,6 +149,11 @@ export async function getResearchAnalytics(): Promise<AnalyticsResult> {
   const user = await getCurrentUser();
   if (!user) return { success: false, error: "You must be logged in." };
 
+  // The PERMISSION is the gate, not a role list: the department console may
+  // grant `analytics.view` to an adviser (or revoke it from an approver), and a
+  // hardcoded role list made exactly that grant do nothing. What each account
+  // SEES is decided by RLS — an adviser's analytics cover the groups they own,
+  // an approver's cover everything.
   const granted = await getMyGrantedPermissions();
   if (!granted.includes("analytics.view")) {
     return {
@@ -171,6 +188,8 @@ export async function getResearchAnalytics(): Promise<AnalyticsResult> {
       .from("taf_analysis_results")
       .select("taf_id, version_number, sdg_categories, field_of_it, internal_matches, internal_similarity_score, external_similarity_score, combined_score")
       .in("taf_id", tafIds);
+    // Prefer the analysis matching each submission's stored version; fall back
+    // to the latest available analysis for the TAF.
     const byTaf: Record<string, any[]> = {};
     for (const r of (anRows || []) as any[]) {
       (byTaf[r.taf_id] ||= []).push(r);
@@ -282,6 +301,8 @@ export async function getResearchAnalytics(): Promise<AnalyticsResult> {
     for (const mc of matches) {
       const jid = (mc.journalId || mc.journal_id || "") as string;
       if (!jid) continue;
+      // One entry per TAF: a TAF that matched this capstone twice still counts
+      // once, so `referenceCount` and the drill-down list always agree.
       const by = {
         submissionId: (s.id as string) || "",
         tafId,

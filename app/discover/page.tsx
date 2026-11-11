@@ -1,4 +1,13 @@
 "use client";
+
+// ============================================================
+// /discover — PUBLIC overview of TAFs sent to the approvers or
+// fully approved. Each card shows a masked owner, the proposed
+// title, SDG + Field of IT badges, a preview of the research gap,
+// the date and the status. Clicking a card opens a dialog with the
+// full details (names stay masked — the server masks them in SQL).
+// ============================================================
+
 import { useEffect, useState } from "react";
 import {
   getDiscoverOverview,
@@ -80,7 +89,7 @@ export default function DiscoverPage() {
 
   return (
     <div className="min-h-screen bg-gray-50">
-      {}
+      {/* Header */}
       <header className="border-b bg-white shadow-sm">
         <div className="mx-auto flex max-w-7xl flex-col gap-2 px-4 py-6 sm:flex-row sm:items-center sm:justify-between">
           <div>
@@ -195,7 +204,7 @@ export default function DiscoverPage() {
           </div>
         )}
 
-        {}
+        {/* Pagination */}
         {!loading && !error && tafs.length > 0 && (
           <div className="mt-6 flex items-center justify-center gap-3">
             <button
@@ -221,7 +230,7 @@ export default function DiscoverPage() {
         )}
       </main>
 
-      {}
+      {/* ── Detail dialog ─────────────────────────────────── */}
       <Dialog
         open={!!selected}
         onOpenChange={(open) => {
@@ -256,7 +265,7 @@ export default function DiscoverPage() {
               </DialogHeader>
 
               <div className="space-y-5">
-                {}
+                {/* Badges */}
                 <div className="space-y-2">
                   <p className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-gray-400">
                     <Target className="h-3.5 w-3.5" /> SDGs Targeted
@@ -277,7 +286,7 @@ export default function DiscoverPage() {
                   )}
                 </div>
 
-                {}
+                {/* Field of IT + score */}
                 <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                   <div className="space-y-2">
                     <p className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-gray-400">
@@ -312,7 +321,7 @@ export default function DiscoverPage() {
                   </div>
                 </div>
 
-                {}
+                {/* Research gap */}
                 <div className="space-y-2">
                   <p className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-gray-400">
                     <Lightbulb className="h-3.5 w-3.5" /> Research Gap Analysis

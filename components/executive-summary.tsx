@@ -1,4 +1,15 @@
 "use client";
+
+// ============================================================
+// ExecutiveSummary — Dean's TAF-submissions-over-time dashboard.
+// Card row: Total Topic Submissions. Big card: line chart
+// "TAF Submissions over time" with two lines (This Academic
+// Year vs Last Academic Year), month on the x-axis and count on
+// the y-axis, plus each year's Peak and Trough submission month.
+// A year selector picks which academic year to compare, and the
+// whole chart + peak/trough stats can be exported to PDF.
+// ============================================================
+
 import { useEffect, useRef, useState } from "react";
 import {
   getExecutiveSummary,
@@ -22,6 +33,11 @@ const LINE_COLORS = { this: "#8B1A1A", last: "#4f46e5" };
 export default function ExecutiveSummary({
   initialData,
 }: {
+  /**
+   * Optional server-supplied summary (bundled into the dashboard's single
+   * mount action). When given, the mount fetch is skipped and the panel paints
+   * immediately; when absent or null it fetches exactly as before.
+   */
   initialData?: ExecutiveSummaryData | null;
 } = {}) {
   const [data, setData] = useState<
@@ -33,13 +49,15 @@ export default function ExecutiveSummary({
   >(initialData ?? null);
   const [loading, setLoading] = useState(!initialData);
   const [err, setErr] = useState<string | null>(null);
-
+  // Default to the most recent academic year, same as the fetch path does.
   const [selectedLabel, setSelectedLabel] = useState<string>(() => {
     const years = initialData?.academicYears ?? [];
     return years.length ? years[years.length - 1].label : "";
   });
   const chartRef = useRef<HTMLDivElement>(null);
   const [printing, setPrinting] = useState(false);
+  // True when the server already supplied the data, so the mount fetch is
+  // unnecessary (and must not clobber the initial selection).
   const hasInitialData = useRef(!!initialData);
 
   useEffect(() => {
@@ -50,7 +68,7 @@ export default function ExecutiveSummary({
       if (cancelled) return;
       if (res.success) {
         setData(res.data);
-
+        // Default to the most recent academic year.
         if (res.data.academicYears.length) {
           setSelectedLabel(
             res.data.academicYears[res.data.academicYears.length - 1].label,
@@ -104,6 +122,10 @@ export default function ExecutiveSummary({
     if (printing) return;
     const target = chartRef.current;
     if (!target) return;
+    // Print isolation via VISIBILITY (not display): hiding display removes the
+    // target's ancestors from layout too, so the chart came out blank. With
+    // visibility the element keeps its position and only it (and its
+    // contents) become visible, which prints reliably even when nested.
     const style = document.createElement("style");
     style.id = "exec-summ-print-style";
     style.textContent = `
@@ -131,7 +153,7 @@ export default function ExecutiveSummary({
 
   return (
     <div>
-      {}
+      {/* ── Header ───────────────────────────────────────── */}
       <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
         <div>
           <h2 className="text-xl font-bold text-[#333] flex items-center gap-2">
@@ -169,7 +191,7 @@ export default function ExecutiveSummary({
         </div>
       </div>
 
-      {}
+      {/* ── KPI: Total topic submissions ─────────────────── */}
       <div className="mb-5 grid grid-cols-1 gap-3 sm:grid-cols-3">
         <div className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
           <div className="flex items-center gap-3">
@@ -218,7 +240,7 @@ export default function ExecutiveSummary({
         </div>
       </div>
 
-      {}
+      {/* ── Line chart card ──────────────────────────────── */}
       <div ref={chartRef} id="exec-summ-export" className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
         <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
           <div>
@@ -243,7 +265,7 @@ export default function ExecutiveSummary({
           <LineChart thisYear={thisYear} lastYear={null} />
         )}
 
-        {}
+        {/* ── Peak & Trough ─────────────────────────────── */}
         <div className="mt-5 grid grid-cols-1 gap-3 sm:grid-cols-2">
           <PeakTrough
             title={thisYear.label}
@@ -268,6 +290,8 @@ export default function ExecutiveSummary({
     </div>
   );
 }
+
+// ── Peak / Trough stat block ────────────────────────────────
 function PeakTrough({
   title,
   peak,
@@ -305,6 +329,8 @@ function PeakTrough({
     </div>
   );
 }
+
+// ── SVG line chart ──────────────────────────────────────────
 function LineChart({
   thisYear,
   lastYear,
@@ -345,7 +371,7 @@ function LineChart({
 
   return (
     <svg viewBox={`0 0 ${W} ${H}`} className="w-full block" role="img" aria-label="TAF submissions over time">
-      {}
+      {/* Y-axis gridlines + labels */}
       {Array.from({ length: yTicks + 1 }, (_, i) => {
         const value = Math.round(stepY * i);
         const yy = y(value);
@@ -359,14 +385,14 @@ function LineChart({
         );
       })}
 
-      {}
+      {/* X-axis month labels */}
       {thisYear.months.map((m, i) => (
         <text key={i} x={x(i)} y={H - 8} textAnchor="middle" fontSize={10} fill="#9ca3af">
           {m.label}
         </text>
       ))}
 
-      {}
+      {/* Last-year area + line (behind this-year) */}
       {lastYear && (
         <>
           <path d={areaPathFor(lastYear)} fill="#4f46e5" fillOpacity={0.08} />
@@ -374,11 +400,11 @@ function LineChart({
         </>
       )}
 
-      {}
+      {/* This-year area + line */}
       <path d={areaPathFor(thisYear)} fill="#8B1A1A" fillOpacity={0.1} />
       <path d={pathFor(thisYear)} fill="none" stroke={LINE_COLORS.this} strokeWidth={2.5} strokeLinejoin="round" strokeLinecap="round" />
 
-      {}
+      {/* Point dots (This Year) */}
       {thisYear.months.map((m, i) => (
         <circle
           key={`t-${i}`}
@@ -399,8 +425,10 @@ function LineChart({
           />
         ))}
 
-      {
-}
+      {/* Hover targets: ONE full-height band per month, drawn last so it sits on
+          top. Hovering anywhere in a month's column (not just the tiny dot)
+          shows the tooltip — a much bigger, easier target. Each band reports
+          both academic years for that month. */}
       {thisYear.months.map((m, i) => {
         const lastMonth = lastYear?.months[i];
         const left = Math.max(PAD.l, x(i) - xStep / 2);

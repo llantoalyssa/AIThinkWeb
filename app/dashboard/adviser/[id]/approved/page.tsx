@@ -1,4 +1,14 @@
-
+// ============================================================
+// /dashboard/adviser/[id]/approved — READ-ONLY Approved TAF list for an
+// adviser granted `taf.approved.view`.
+//
+// The rows come from the SAME action the approver dashboards use
+// (getApprovedTAFs), which is gated by that permission and scoped by RLS: an
+// adviser sees the fully approved TAFs of the groups they own. Each row opens
+// the TAF in the adviser's own group-scoped viewer, because the flat
+// /dashboard/adviser/<id>/submission/<id> route an approver uses does not exist
+// here (the slug lives on the group).
+// ============================================================
 
 import { redirect } from "next/navigation";
 

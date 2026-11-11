@@ -10,6 +10,10 @@ import { ProfileSettingsPage } from "@/components/profile-settings";
 export default function DeanProfilePage() {
   const params = useParams<{ id: string }>();
   const userId = params.id;
+  // Same list (and order) as the dean dashboard's own nav: Executive Summary is
+  // first for the DEAN only. Every href carries an explicit ?tab= because the
+  // dean's default tab is Executive Summary — without it, clicking "Research
+  // Analytics" or "TAF Submissions" from here landed on the wrong tab.
   const navItems = [
     { id: "executive-summary", icon: <ClipboardList className="h-5 w-5" />, label: "Executive Summary", href: `/dashboard/dean/${userId}?tab=executive-summary` },
     { id: "analytics", icon: <BarChart3 className="h-5 w-5" />, label: "Research Analytics", href: `/dashboard/dean/${userId}?tab=analytics` },

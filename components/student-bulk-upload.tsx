@@ -1,4 +1,21 @@
 "use client";
+
+// ============================================================
+// Bulk student registration — CSV upload for the department's Users page.
+//
+// WHY: the console creates one account at a time; a new intake is dozens of
+// students. The sheet is STUDENTS ONLY (the role is not a column — that is the
+// whole point), and both `email` and `password` may be left blank:
+//   • email   → derived from the SR code (23-93627@g.batstate-u.edu.ph), which
+//               is exactly the rule the registration form enforces;
+//   • password→ a temporary one is generated, shown in the result and offered
+//               as a download so the office can hand it out.
+//
+// Everything is validated again on the SERVER (bulkCreateStudents → createUser),
+// so a hand-edited file can never create something the single-user dialog would
+// have refused.
+// ============================================================
+
 import { useRef, useState } from "react";
 import { Download, FileSpreadsheet, Loader2, Upload } from "lucide-react";
 import { toast } from "sonner";
@@ -33,10 +50,12 @@ const TEMPLATE_HEADERS = [
 ];
 
 const TEMPLATE_SAMPLE_ROWS = [
-
+  // email + password left blank on purpose: both are optional.
   ["23-93627", "Juan", "M", "Dela Cruz", "", "", ""],
   ["23-93628", "Maria", "", "Santos", "", "23-93628@g.batstate-u.edu.ph", ""],
 ];
+
+/** Read a field by any of its accepted header spellings. */
 function field(row: Record<string, string>, ...names: string[]): string {
   for (const name of names) {
     const key = normaliseHeader(name);
@@ -48,7 +67,7 @@ function field(row: Record<string, string>, ...names: string[]): string {
 export default function StudentBulkUpload({
   onDone,
 }: {
-
+  /** Called after a successful batch so the parent can refetch the list. */
   onDone?: () => void | Promise<void>;
 }) {
   const [open, setOpen] = useState(false);
@@ -68,6 +87,8 @@ export default function StudentBulkUpload({
   }
 
   function downloadTemplate() {
+    // A comment row is not possible in CSV, so the instructions live in the
+    // dialog; the file is just headers + two sample rows.
     downloadCsv(
       "student-registration-template.csv",
       toCsv(TEMPLATE_HEADERS, TEMPLATE_SAMPLE_ROWS),
@@ -131,7 +152,7 @@ export default function StudentBulkUpload({
         }.`,
       );
       await onDone?.();
-
+      // Let the user read the report before the list behind the dialog changes.
     } catch (error) {
       console.error("[bulk-upload] failed:", error);
       toast.error("The upload failed. Please try again.");
@@ -192,7 +213,7 @@ export default function StudentBulkUpload({
         </DialogHeader>
 
         <div className="space-y-4">
-          {}
+          {/* 1. Template */}
           <div className="rounded-lg border bg-gray-50/60 p-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
@@ -221,7 +242,7 @@ export default function StudentBulkUpload({
             </ul>
           </div>
 
-          {}
+          {/* 2. File */}
           <div className="space-y-2">
             <label className="text-sm font-medium text-[#333]" htmlFor="bulk-csv">
               CSV file
@@ -248,7 +269,7 @@ export default function StudentBulkUpload({
             )}
           </div>
 
-          {}
+          {/* 3. Report */}
           {results && (
             <div className="space-y-2">
               <div className="flex flex-wrap items-center justify-between gap-2">

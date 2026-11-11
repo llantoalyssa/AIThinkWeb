@@ -12,6 +12,7 @@ import SubmissionReviewContent from '@/components/submission-review-content'
 import SidebarCollapseHandle from "@/components/sidebar-collapse-handle";
 import RecentTafs from '@/components/recent-tafs'
 import { useUnreadNotifications } from '@/hooks/use-unread-notifications'
+import StudentNotificationsBell from '@/components/student-notifications-bell'
 import { UserMenu } from '@/components/user-menu'
 import { unsubmitTAF } from '@/server/actions/approval-workflow'
 import { toast } from 'sonner'
@@ -143,6 +144,9 @@ export default function StudentSubmissionViewPage({
           {mobileMenuOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
         </button>
         <h1 className="text-lg font-semibold text-[#333] flex-1">AIThink</h1>
+        {/* One bell on every student page — the header was inconsistent: it
+            appeared on the dashboard/TAF/profile only. */}
+        <StudentNotificationsBell userId={userId} />
         <UserMenu user={currentUser} userId={userId} routeBase="/dashboard/student" />
       </header>
 

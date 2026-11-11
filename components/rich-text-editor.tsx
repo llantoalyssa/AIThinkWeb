@@ -1,4 +1,12 @@
 "use client";
+
+// ============================================================
+// RichTextEditor — TipTap-based WYSIWYG editor for TAF fields
+// Toolbar: bold, italic, underline, strike, headings (H2/H3),
+// bullet/ordered lists, blockquote, code, link, undo/redo.
+// Supports read-only (locked) mode via `readOnly` prop.
+// ============================================================
+
 import { useEffect, useRef } from "react";
 import { useEditor, EditorContent } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
@@ -27,7 +35,7 @@ type Props = {
   readOnly?: boolean;
   placeholder?: string;
   minHeight?: string;
-
+  /** Extra classes on the wrapper (e.g. to dim a read-only editor). */
   className?: string;
 };
 
@@ -47,7 +55,7 @@ function ToolbarButton({
   return (
     <button
       type="button"
-      onMouseDown={(e) => e.preventDefault()}
+      onMouseDown={(e) => e.preventDefault()} // keep editor focus
       onClick={onClick}
       disabled={disabled}
       title={title}
@@ -70,15 +78,23 @@ export default function RichTextEditor({
   readOnly = false,
   placeholder = "Write something...",
   minHeight = "120px",
-
+  /** Extra classes on the wrapper (e.g. to dim a read-only editor). */
   className,
 }: Props) {
-
+  // Tracks last value we pushed into the editor externally.
   const lastPushed = useRef<string>(value || "");
+  // True until the editor has been focused or has emitted real content. The
+  // transaction TipTap dispatches when the editor is CREATED arrives while the
+  // editor is still pristine and reports an EMPTY doc — that emission must not
+  // reach `onChange`: on a draft-restore flow the editor mounts empty (the
+  // draft lands one commit later) and forwarding it blanked every field the
+  // restore had just filled, then the autosave persisted the blanks.
+  // A genuine clear by the user always happens in a FOCUSED editor, so
+  // `onFocus` clears pristine and later empty emissions pass through.
   const pristineRef = useRef(true);
 
   const editor = useEditor({
-
+    // Next.js SSR: must be false to avoid hydration mismatch errors
     immediatelyRender: false,
     extensions: [
       StarterKit.configure({
@@ -101,7 +117,7 @@ export default function RichTextEditor({
     },
     onUpdate: ({ editor: e }) => {
       const html = e.isEmpty ? "" : e.getHTML();
-
+      // Drop the creation-time empty emission (see pristineRef above).
       if (!html && pristineRef.current) {
         lastPushed.current = html;
         return;
@@ -111,15 +127,24 @@ export default function RichTextEditor({
       onChange(html);
     },
     onFocus: () => {
-
+      // Once the user interacts, empty emissions are genuine clears.
       pristineRef.current = false;
     },
   });
+
+  // Apply readOnly changes (toggle editable without losing content)
   useEffect(() => {
     if (!editor) return;
     if (editor.isEditable === readOnly) return;
     editor.setEditable(!readOnly);
   }, [editor, readOnly]);
+
+  // Sync external `value` changes (e.g. TAF loaded async, or the AI
+  // enhancement write-back after analyze/re-analyze) into the editor.
+  // The lastPushed comparison prevents re-setting the same value (which
+  // would clobber the user's cursor) — we intentionally do NOT gate this
+  // on "user has typed", because a genuine external update (enhancement /
+  // load) must still reach the editor even after edits.
   useEffect(() => {
     if (!editor) return;
     const incoming = value || "";
@@ -278,13 +303,16 @@ export default function RichTextEditor({
     </div>
   );
 }
+
+// ── Helper: extract plain text from HTML (for validation / previews) ──
+
 export function htmlToText(html: string): string {
   if (!html) return "";
   if (typeof document !== "undefined") {
     const doc = new DOMParser().parseFromString(html, "text/html");
     return (doc.body.textContent || "").replace(/\s+/g, " ").trim();
   }
-
+  // Server-side fallback: crude tag strip
   return html
     .replace(/<[^>]*>/g, " ")
     .replace(/&nbsp;/g, " ")

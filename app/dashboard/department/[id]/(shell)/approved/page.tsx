@@ -1,4 +1,13 @@
-
+// ============================================================
+// /dashboard/department/[id]/approved — Approved TAF list for the department.
+//
+// Gated by `taf.approved.view` (a department default since migration 053) and
+// scoped by RLS, so the department sees every fully approved TAF.
+//
+// The rows open the department's TAF Submissions section, because the
+// department has no standalone submission route — its review surface is the
+// in-page ?section=submissions panel.
+// ============================================================
 
 import { redirect } from "next/navigation";
 import { ShieldAlert } from "lucide-react";

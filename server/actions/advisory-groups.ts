@@ -7,7 +7,11 @@ import { canOwnAdvisoryGroup } from "@/lib/roles";
 import { getGrantedPermissions } from "./permissions";
 import { groupSlug } from "@/lib/slug";
 
-
+/**
+ * Group descriptions are card labels, not abstracts — one shared budget for
+ * every write path (create + edit) and for the dialogs' character counters.
+ * Not exported: a "use server" module may only export async functions.
+ */
 const DESCRIPTION_MAX = 200;
 
 export type AdvisoryGroup = {
@@ -42,7 +46,22 @@ export type AdvisoryGroupsListResult =
   | { success: true; data: AdvisoryGroup[] }
   | { success: false; error: string };
 
-
+// ── Department permission guard ────────────────────────────────
+/**
+ * The department obeys the permission set like every other role: its nav is
+ * filtered and its sections gated in the UI, and THIS is the half that refuses
+ * a direct call — a department account without `groups.view` / `groups.create`
+ * must not be able to list or create groups by invoking the action itself.
+ *
+ * Only the department is affected. An adviser / associate dean / dean passes
+ * through untouched: their role defaults include both keys (migration 053) and
+ * this branch is never taken for them.
+ *
+ * Fails OPEN on a reader error. The role gate above has already established a
+ * legitimate group owner, and a broken permission read must not lock a whole
+ * role out of a surface it has always had; the UI gate still hides it and RLS
+ * is the final authority.
+ */
 async function departmentBlocked(
   role: string,
   userId: string,
@@ -58,6 +77,7 @@ async function departmentBlocked(
   }
 }
 
+/** Message shown when a department account lacks the capability. */
 function departmentDeniedMessage(action: string, permission: string): string {
   return `Your account has not been granted permission to ${action} advisory groups (${permission}). Ask a department account to grant it.`;
 }
@@ -108,7 +128,10 @@ export async function createAdvisoryGroup(
 
   const supabase = await createClient();
 
-
+  // Group ROUTES are derived from the NAME (…/groups/<slug>), so two groups with
+  // the same name under one owner produce the same URL — both links then open
+  // the same group and the other becomes unreachable. Refuse the collision
+  // instead of silently creating an ambiguous route.
   const { data: existingGroups } = await supabase
     .from("advisory_groups")
     .select("id, name")
@@ -472,7 +495,10 @@ export async function getAdviserTotalStudents(): Promise<
 
 // ── Per-group joined-student counts (for the group cards) ───────────
 
-
+/**
+ * One query for every group the caller owns, so each card can show its own
+ * joined-student count without a request per card.
+ */
 export async function getGroupMemberCounts(): Promise<
   { success: true; counts: Record<string, number> } | { success: false; error: string }
 > {
@@ -524,7 +550,11 @@ export async function getGroupMemberCounts(): Promise<
 
 // ── Per-group pending-TAF counts (for the group cards) ──────────────
 
-
+/**
+ * TAFs from each of the caller's groups that are still awaiting a decision —
+ * the number the card's badge shows, so a card can say "3 pending" instead of
+ * a meaningless "Active".
+ */
 export async function getGroupPendingCounts(): Promise<
   { success: true; counts: Record<string, number> } | { success: false; error: string }
 > {
@@ -710,7 +740,10 @@ export async function joinGroupByCode(joinCode: string): Promise<JoinGroupResult
     return { success: false, error: "You can only join one advisory group. Leave your current group first." };
   }
 
-
+  // Call the database function to join the group
+  // Note: join_advisory_group_by_code is RETURNS TABLE, so supabase-js may
+  // return `data` as an array of one row rather than a plain object. Normalize
+  // so `row.success` / `row.message` etc. always resolve correctly.
   const { data, error } = await supabase.rpc("join_advisory_group_by_code", {
     p_join_code: joinCode.toUpperCase(),
   });
@@ -728,7 +761,8 @@ export async function joinGroupByCode(joinCode: string): Promise<JoinGroupResult
     return { success: false, error: row?.message || "Failed to join group. Please try again." };
   }
 
-
+  // Notify the group's adviser that a student just joined (fires immediately,
+  // so it shows in the adviser's bell / notifications page without a refresh).
   try {
     const groupId = row.out_group_id as string | undefined;
     const groupName = row.group_name as string | undefined;
@@ -773,7 +807,11 @@ export async function joinGroupByCode(joinCode: string): Promise<JoinGroupResult
 }
 
 // ── Leave an advisory group (for students) ──────────────────────
-
+// Deletes ONLY the student's membership. Submitted TAFs are scoped by
+// group_id + submitted_by and are NOT deleted — they remain visible to the
+// adviser/approvers. Once the membership row is gone, the server-side access
+// gates (`getStudentGroupBySlug`, `getSubmissionById`) deny the student any
+// further access to the group and its submission pages.
 export async function leaveAdvisoryGroup(
   groupId: string
 ): Promise<{ success: true } | { success: false; error: string }> {
@@ -849,7 +887,13 @@ export async function leaveAdvisoryGroup(
 }
 
 // ── Remove a student from an advisory group (for advisers) ─────────────
-
+// Deletes ONLY the student's membership row for that group. Anything the
+// student already submitted lives in group_taf_submissions (keyed by
+// group_id + submitted_by) and is deliberately left alone, so the adviser
+// keeps the submission and its approval trail. The student is notified.
+//
+// Requires migration 043: the adviser DELETE policy on
+// student_group_memberships, plus the 'removed_from_group' notification type.
 export async function removeStudentFromGroup(
   groupId: string,
   studentId: string
@@ -890,7 +934,8 @@ export async function removeStudentFromGroup(
     return { success: false, error: "That student is not in this group." };
   }
 
-
+  // Name for the toast + notification (profiles FK is to auth.users, so this
+  // is a separate lookup).
   const { data: profile } = await supabase
     .from("profiles")
     .select("first_name, last_name")
@@ -913,6 +958,7 @@ export async function removeStudentFromGroup(
     };
   }
 
+  // Best-effort notification — never fail the removal because of this.
   try {
     await supabase.from("approval_notifications").insert({
       user_id: studentId,
@@ -948,7 +994,13 @@ export type StudentGroupMembership = {
   groupName: string;
   groupDescription: string | null;
   joinCode: string;
-
+  /**
+   * false = the adviser archived the group.
+   *
+   * A member keeps READ access to an archived group (migration 065) so they can
+   * review what was already submitted; the group becomes read-only and the only
+   * action they have is Leave, which frees them to join the next group.
+   */
   isActive: boolean;
   joinedAt: string;
   adviserId: string;
@@ -1035,7 +1087,10 @@ export async function getAdviserGroupBySlug(
     return { success: false, error: "Only advisers, the associate dean, the dean and the department can access this." };
   }
 
-
+  // A single group is a READ of the group surface: a department account
+  // without groups.view must not open one by slug either. Its route
+  // (…/groups/<slug>) turns this failure into a redirect to ?section=groups,
+  // which renders the no-access notice.
   if (await departmentBlocked(user.role, user.id, "groups.view")) {
     return { success: false, error: departmentDeniedMessage("view", "groups.view") };
   }
@@ -1193,6 +1248,9 @@ export async function getStudentGroupDetail(
   };
 }
 
+// ── Get group member roster (for a student in the group) ─────────────
+// Uses a SECURITY DEFINER RPC so a group's members can see their roster
+// even though the table RLS only lets a student SELECT their own row.
 
 export type StudentGroupMember = {
   id: string;

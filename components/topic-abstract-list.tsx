@@ -17,6 +17,9 @@ import { HIGH_SIMILARITY_THRESHOLD } from "@/lib/constants";
 type Props = {
   onNewForm: () => void;
   onEditForm: (tafId: string, proposedTitle: string) => void;
+  /** List fetched on the SERVER and handed down. When present the component
+   *  renders with data immediately instead of firing its own request on mount —
+   *  which is what made a side-nav click cost several sequential round trips. */
   initialTafs?: TopicAbstractForm[];
 };
 
@@ -52,6 +55,8 @@ export default function TopicAbstractList({ onNewForm, onEditForm, initialTafs }
   const [loading, setLoading] = useState(!initialTafs);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null);
+
+  // Multi-select for bulk delete
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkConfirmOpen, setBulkConfirmOpen] = useState(false);
   const [bulkDeleting, setBulkDeleting] = useState(false);
@@ -59,6 +64,9 @@ export default function TopicAbstractList({ onNewForm, onEditForm, initialTafs }
   const deleteTarget = deleteTargetId
     ? tafs.find((t) => t.id === deleteTargetId)
     : null;
+
+  // ── Load TAFs ──────────────────────────────────────────────────
+  // Skipped entirely when the list arrived from the server as a prop.
   useEffect(() => {
     if (initialTafs) return;
     let cancelled = false;
@@ -76,6 +84,8 @@ export default function TopicAbstractList({ onNewForm, onEditForm, initialTafs }
     load();
     return () => { cancelled = true; };
   }, [initialTafs]);
+
+  // ── Selection handling ──────────────────────────────────────────
   function toggleSelect(id: string, e: React.MouseEvent) {
     e.stopPropagation();
     setSelectedIds((prev) => {
@@ -101,6 +111,8 @@ export default function TopicAbstractList({ onNewForm, onEditForm, initialTafs }
       setSelectedIds(new Set(selectableTafs.map((t) => t.id)));
     }
   }
+
+  // ── Delete handling ──────────────────────────────────────────────
   function handleDeleteClick(id: string, e: React.MouseEvent) {
     e.stopPropagation();
     setDeleteTargetId(id);
@@ -130,6 +142,8 @@ export default function TopicAbstractList({ onNewForm, onEditForm, initialTafs }
       setDeleteTargetId(null);
     }
   }
+
+  // ── Bulk delete ─────────────────────────────────────────────────
   async function handleBulkDeleteConfirm() {
     const ids = Array.from(selectedIds);
     if (ids.length === 0) return;
@@ -163,6 +177,8 @@ export default function TopicAbstractList({ onNewForm, onEditForm, initialTafs }
     const stripped = text.replace(/<[^>]*>/g, "").replace(/\s+/g, " ");
     return stripped.length > maxLen ? stripped.slice(0, maxLen) + "…" : stripped;
   }
+
+  // ── Loading ──────────────────────────────────────────────────────
   if (loading) {
     return (
       <div className="flex items-center justify-center py-20">
@@ -170,6 +186,8 @@ export default function TopicAbstractList({ onNewForm, onEditForm, initialTafs }
       </div>
     );
   }
+
+  // ── Empty state ──────────────────────────────────────────────────
   if (tafs.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center py-16 text-center">
@@ -190,9 +208,11 @@ export default function TopicAbstractList({ onNewForm, onEditForm, initialTafs }
       </div>
     );
   }
+
+  // ── List ──────────────────────────────────────────────────────────
   return (
     <div>
-      {}
+      {/* Header with create button */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
         <div>
           <h1 className="text-xl sm:text-2xl font-bold text-[#333]">My Topic Abstract Forms</h1>
@@ -209,7 +229,7 @@ export default function TopicAbstractList({ onNewForm, onEditForm, initialTafs }
         </Button>
       </div>
 
-      {}
+      {/* Selection / bulk-action toolbar */}
       {selectedIds.size > 0 && (
         <div className="mb-4 flex flex-wrap items-center gap-3 rounded-xl border border-[#8B1A1A]/20 bg-[#8B1A1A]/5 px-4 py-2.5">
           <span className="text-sm font-medium text-[#333]">
@@ -242,7 +262,7 @@ export default function TopicAbstractList({ onNewForm, onEditForm, initialTafs }
         </div>
       )}
 
-      {}
+      {/* Select-all row */}
       {selectableTafs.length > 0 && (
         <div className="mb-3 flex items-center gap-2">
           <input
@@ -258,7 +278,7 @@ export default function TopicAbstractList({ onNewForm, onEditForm, initialTafs }
         </div>
       )}
 
-      {}
+      {/* Card grid */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
         {tafs.map((taf) => {
           const isSelected = selectedIds.has(taf.id);
@@ -274,7 +294,7 @@ export default function TopicAbstractList({ onNewForm, onEditForm, initialTafs }
             >
               <CardHeader className="pb-3">
                 <div className="flex items-start gap-3">
-                  {}
+                  {/* Selection checkbox (only for deletable / not-yet-submitted) */}
                   {taf.canDelete ? (
                     <input
                       type="checkbox"
@@ -300,16 +320,16 @@ export default function TopicAbstractList({ onNewForm, onEditForm, initialTafs }
                 </div>
               </CardHeader>
               <CardContent className="pt-0 flex-1 flex flex-col gap-3">
-                {}
+                {/* Preview of the background */}
                 {taf.background && (
                   <p className="text-sm text-gray-600 line-clamp-2 leading-relaxed">
                     {getPreview(taf.background, 120)}
                   </p>
                 )}
 
-                {
-
-}
+                {/* Status badge + similarity score + delete (delete lives in
+                    the footer row, away from the title, so it doesn't read as
+                    "delete this card") */}
                 <div className="mt-auto pt-2 flex items-center justify-between gap-2">
                   <div className="flex items-center gap-1.5 flex-wrap">
                     <span
@@ -358,7 +378,7 @@ export default function TopicAbstractList({ onNewForm, onEditForm, initialTafs }
                     </span>
                   )}
                 </div>
-                {}
+                {/* Only show a submission date — unsubmitted drafts show nothing. */}
                 {taf.submittedAt &&
                   ["submitted", "under_review", "approved", "revisions_needed"].includes(
                     taf.status,
@@ -373,7 +393,7 @@ export default function TopicAbstractList({ onNewForm, onEditForm, initialTafs }
         })}
       </div>
 
-      {}
+      {/* Single-delete confirmation modal */}
       <ConfirmDeleteModal
         open={deleteTargetId !== null}
         onOpenChange={handleDeleteModalClose}
@@ -384,7 +404,7 @@ export default function TopicAbstractList({ onNewForm, onEditForm, initialTafs }
         description="Are you sure you want to delete this TAF? This action cannot be undone."
       />
 
-      {}
+      {/* Bulk-delete confirmation modal */}
       <ConfirmDeleteModal
         open={bulkConfirmOpen}
         onOpenChange={(open) => {

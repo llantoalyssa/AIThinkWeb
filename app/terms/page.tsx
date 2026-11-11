@@ -1,5 +1,12 @@
 import Link from "next/link";
 import { FileText, ArrowLeft } from "lucide-react";
+
+// ============================================================
+// Public Terms & Conditions + Privacy Policy page.
+// Content mirrors public/Terms-and-Conditions_Privacy-Policy.docx
+// Reachable without signing in (the middleware only guards /dashboard).
+// ============================================================
+
 export const metadata = {
   title: "Terms & Conditions and Privacy Policy — AIThink",
 };
@@ -52,7 +59,7 @@ export default function TermsPage() {
 
       <main className="mx-auto max-w-3xl px-4 py-8">
         <article className="space-y-8 rounded-2xl border border-gray-200 bg-white p-6 text-sm shadow-sm sm:p-8">
-          {}
+          {/* ── User Agreement ──────────────────────────────── */}
           <header className="space-y-1 border-b pb-4">
             <h1 className="text-2xl font-bold text-[#333]">
               User Agreement and Terms of Service
@@ -60,8 +67,8 @@ export default function TermsPage() {
             <p className="text-sm font-medium text-gray-500">AITHINK Platform</p>
           </header>
 
-          {
-}
+          {/* Intro — the doc has no heading here, the subtitle above IS the
+              "AITHINK Platform" line, so these paragraphs follow directly. */}
           <div className="space-y-2 leading-relaxed text-gray-700">
             <p>
               AIThink is an institutional decision support system (DSS) for the
@@ -187,7 +194,7 @@ export default function TermsPage() {
             </p>
           </Section>
 
-          {}
+          {/* ── Privacy Policy ──────────────────────────────── */}
           <header className="space-y-1 border-t pt-8">
             <h1 className="text-2xl font-bold text-[#333]">Privacy Policy</h1>
             <p className="text-sm font-medium text-gray-500">

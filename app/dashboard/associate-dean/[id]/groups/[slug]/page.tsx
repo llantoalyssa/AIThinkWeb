@@ -1,4 +1,10 @@
-
+// ============================================================
+// Associate dean advisory-group detail.
+//
+// Same screen an adviser gets — the adviser's group-detail client with
+// basePath pointed at the associate-dean routes, so every link, the sidebar
+// and the back button stay inside this dashboard.
+// ============================================================
 
 import { redirect } from "next/navigation";
 import { getAdviserGroupData } from "@/server/actions/adviser-shell";

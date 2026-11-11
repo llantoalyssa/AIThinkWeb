@@ -69,6 +69,10 @@ export default function LoginForm() {
     try {
       const supabase = createClient()
       const { error } = await supabase.auth.resetPasswordForEmail(emailValue, {
+        // Supabase's reset link lands here directly; the /auth/update-password
+        // page exchanges the code on the CLIENT (the browser that initiated
+        // the reset holds the PKCE code_verifier — a server-side exchange
+        // fails with "PKCE code verifier not found in storage").
         redirectTo: `${window.location.origin}/auth/update-password`,
       })
       if (error) {
@@ -135,6 +139,9 @@ export default function LoginForm() {
         provider: 'google',
         options: {
           redirectTo: `${window.location.origin}/auth/callback`,
+          // hd is a Google hint that filters the account chooser to this
+          // Workspace domain; it is NOT enforcement — the callback route
+          // re-checks the email domain server-side.
           queryParams: {
             hd: ALLOWED_EMAIL_DOMAIN.replace('@', ''),
             prompt: 'select_account',

@@ -1,6 +1,18 @@
 "use client";
 
-
+// ============================================================
+// Department → Profile (client half).
+//
+// Split out of page.tsx so the identity and the PERMISSION SET can be resolved
+// on the SERVER and ship with the first render: the department's nav is now
+// filtered by its grants (components/nav-items.tsx), and rendering it before
+// the grants arrive would flash every item first.
+//
+// The item list is still the ONE shared source (navItemsFor, backed by
+// departmentNav), exactly like the dashboard, notifications and audit-trail
+// pages. The unread badge wiring is unchanged: only the notifications item
+// carries it, and ProfileSettingsPage renders the badge itself.
+// ============================================================
 
 import { ProfileSettingsPage, type ProfileNavItem } from "@/components/profile-settings";
 import { useUnreadNotifications } from "@/hooks/use-unread-notifications";

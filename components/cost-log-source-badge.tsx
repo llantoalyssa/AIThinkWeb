@@ -1,4 +1,8 @@
 import { BrainCircuit, RefreshCw, BookOpen, Sparkles } from "lucide-react";
+
+// ── Source metadata: label + description + badge style ──────
+// Explains WHERE each cost came from so the user knows what
+// kind of operation consumed the tokens.
 export const SOURCE_META: Record<
   string,
   { label: string; description: string; badgeClass: string; icon: React.ReactNode }

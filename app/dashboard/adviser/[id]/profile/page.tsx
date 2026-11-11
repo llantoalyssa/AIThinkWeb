@@ -11,6 +11,10 @@ export default function AdviserProfilePage() {
   const params = useParams<{ id: string }>();
   const userId = params.id;
   const unread = useUnreadNotifications(userId);
+  // Granted pages (Research Analytics / Approved TAF / Journals / Audit Trail)
+  // must appear HERE too, not only on the dashboard: every one of the role's
+  // pages renders the same nav, and an item that exists on one page and not the
+  // next reads as the grant having been lost.
   const [permissions, setPermissions] = useState<string[] | undefined>(undefined);
   useEffect(() => {
     let cancelled = false;
@@ -22,6 +26,11 @@ export default function AdviserProfilePage() {
       cancelled = true;
     };
   }, []);
+  // The adviser's items come from the ONE shared source
+  // (components/nav-items.tsx) — no local copy here any more.
+  // ProfileSettingsPage needs a concrete href, and the unread NOTIFICATIONS
+  // badge stays caller-owned wiring keyed on item.id (nav-items carries no
+  // counts by design).
   const navItems: ProfileNavItem[] = navItemsFor({ role: "adviser", userId, permissions }).map(
     (item): ProfileNavItem => ({
       id: item.id,

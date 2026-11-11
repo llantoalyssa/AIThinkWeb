@@ -1,4 +1,14 @@
 "use client";
+
+// ============================================================
+// ApproverDashboard — shared dashboard for Associate Dean,
+// Dean, and VCRDES accounts.
+// Side nav: Research Analytics (placeholder), TAF Submissions
+// (pending approvals table), Approved TAFs (table with search
+// + academic-year filter). All rows link to the submission
+// detail page where the approver reviews and decides.
+// ============================================================
+
 import { useCallback, useEffect, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { type CurrentUser } from "@/server/actions/auth";
@@ -47,6 +57,9 @@ const ROLE_LABEL: Record<Role, string> = {
   dean: "Dean",
   vcrdes: "VCRDES",
 };
+
+// Tab set comes from the shared sidebar module so adding a nav item there can
+// never leave this page's tab union out of sync (it silently did for "groups").
 type Tab = ApproverTab;
 
 const STATUS_STYLES: Record<string, string> = {
@@ -69,8 +82,31 @@ export default function ApproverDashboard({ role }: { role: Role }) {
   const searchParams = useSearchParams();
   const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
   const [loading, setLoading] = useState(true);
+  /**
+   * The permission keys this account effectively holds, supplied with the shell
+   * (getApproverShell) so no second request is needed. EMPTY until it arrives —
+   * and an empty list is exactly today's behaviour, so an account with no
+   * grants (every account, until the department console grants one) renders the
+   * same items it always has.
+   */
   const [permissions, setPermissions] = useState<string[] | undefined>(undefined);
+  // The URL is the SINGLE SOURCE OF TRUTH for the active tab.
+  //
+  // Mirroring the URL into React state caused a race: when the approver
+  // arrived here via a client-side navigation (e.g. right after approving a
+  // TAF) the state could initialise from a stale URL and default to
+  // "analytics" — leaving the address bar on ?tab=pending while the UI
+  // rendered Research Analytics. Deriving the tab from `searchParams` every
+  // render makes it impossible for the rendered tab to disagree with the URL.
+  //
+  // (Research Analytics is the landing tab; Executive Summary is the DEAN's.)
   const requestedTab = searchParams.get("tab");
+  // NOTE: "analytics" MUST be in this list. It used to be omitted because the
+  // non-dean default is already "analytics", which masked the bug for the
+  // associate dean / vcrdes — but the DEAN's default is "executive-summary",
+  // so clicking Research Analytics (?tab=analytics) fell through to the
+  // default and the page stayed on Executive Summary: the nav item looked
+  // dead.
   const tab: Tab =
     requestedTab === "analytics" ||
     requestedTab === "pending" ||
@@ -81,6 +117,8 @@ export default function ApproverDashboard({ role }: { role: Role }) {
       : role === "dean"
         ? "executive-summary"
         : "analytics";
+
+  // Changing the tab = changing the URL (keeps the query reload-safe).
   const setTab = useCallback(
     (next: Tab) => {
       const p = new URLSearchParams(searchParams.toString());
@@ -89,19 +127,44 @@ export default function ApproverDashboard({ role }: { role: Role }) {
     },
     [searchParams, router, pathname],
   );
+
+  // Only the DEAN gets the first-position "Executive Summary" tab. VCRDES and
+  // the associate dean keep the core three tabs. The two roles that can OWN a
+  // group (associate dean, dean) additionally get "Advisory Group" — the same
+  // place the adviser's group UI lives.
+  //
+  // WHICH items those are is decided by the ONE shared source
+  // (components/nav-items.tsx), so this page, the submission review page and
+  // the adviser's group page can no longer show different navs for one role.
+  // `isExecutiveRole` is still what the tab guard and the panel below key off.
+  //
+  // `permissions` is what surfaces a GRANTED department page (e.g. the one
+  // associate dean with "pages.feedback"): nav-items appends a "pages.*" item
+  // for it, and approverNavItemsFor re-points that item at this ROLE's own
+  // route, because the department route it would otherwise carry is not
+  // reachable for an approver. With no grants the list is unchanged.
   const isExecutiveRole = role === "dean";
   const navItems = approverNavItemsFor(
     role,
     currentUser?.id ?? "",
     permissions,
   );
-
+  // Guard against a stale ?tab= for a role that does not have it.
   const roleTab: Tab =
     tab === "executive-summary" && !isExecutiveRole
       ? "analytics"
       : tab === "groups" && role !== "associate_dean" && role !== "dean"
         ? "analytics"
         : tab;
+
+  /**
+   * WHICH tabs this account may open is decided by PERMISSION, not by role
+   * (migrations 053/060). Until the list arrives (`undefined`) every tab is
+   * allowed, so the first paint is the role's normal dashboard rather than an
+   * empty one; once it lands, a key the account does not hold removes its tab
+   * from the rail AND from here — so a hand-typed `?tab=analytics` cannot render
+   * a panel the account may not use.
+   */
   const TAB_PERMISSIONS: Record<Tab, string> = {
     "executive-summary": "executive_summary.view",
     analytics: "analytics.view",
@@ -125,7 +188,7 @@ export default function ApproverDashboard({ role }: { role: Role }) {
   const effectiveTab: Tab = allowedTabs.includes(roleTab)
     ? roleTab
     : (allowedTabs[0] ?? "analytics");
-
+  /** null = this account holds none of its role's tab permissions. */
   const view: Tab | null = allowedTabs.length > 0 ? effectiveTab : null;
 
   const [sidebarExpanded, setSidebarExpanded] = useState(true);
@@ -134,10 +197,18 @@ export default function ApproverDashboard({ role }: { role: Role }) {
   const [pending, setPending] = useState<ApprovalListItem[]>([]);
   const [approved, setApproved] = useState<ApprovalListItem[]>([]);
   const [loadingPending, setLoadingPending] = useState(false);
+  // The approved list is loaded once by getApproverShell and refreshed only by
+  // a full navigation, so it has no loading state of its own any more.
   const loadingApproved = false;
+
+  // Server-supplied first payloads (from getApproverShell) so the bell and the
+  // landing-tab panel do NOT fetch on mount; each keeps its own fetch as a
+  // fallback for when its prop is absent or null.
   const [initialNotifications, setInitialNotifications] = useState<
     ApprovalNotification[] | undefined
   >(undefined);
+  /** submissionId → owned group slug, arriving WITH the notifications above so
+   *  the bell routes an owned-group submission like the notifications page. */
   const [initialOwnedGroupSlugs, setInitialOwnedGroupSlugs] = useState<
     Record<string, string> | undefined
   >(undefined);
@@ -147,9 +218,16 @@ export default function ApproverDashboard({ role }: { role: Role }) {
   const [initialExecutiveSummary, setInitialExecutiveSummary] = useState<
     ExecutiveSummaryData | null | undefined
   >(undefined);
+
+  // Approved table filters
   const [search, setSearch] = useState("");
   const [yearFilter, setYearFilter] = useState("all");
   const [exportingApproved, setExportingApproved] = useState(false);
+
+  // ── Auth guard + first data load ─────────────────────────
+  // ONE bundled server action (getApproverShell) replaces five separate
+  // queued calls: getCurrentUser, getPendingApprovals, getApprovedTAFs, the
+  // landing tab's analytics/summary, and the bell's notifications.
   useEffect(() => {
     let cancelled = false;
     async function init() {
@@ -183,12 +261,25 @@ export default function ApproverDashboard({ role }: { role: Role }) {
       cancelled = true;
     };
   }, [router, role]);
+
+  // ── Load data ────────────────────────────────────────────
   const loadPending = useCallback(async () => {
     setLoadingPending(true);
     const result = await getPendingApprovals();
     if (result.success) setPending(result.data);
     setLoadingPending(false);
   }, []);
+
+  // NOTE: the initial pending/approved load is GONE on purpose — it used to
+  // fire two more queued server actions on mount right after the auth guard.
+  // Both lists now arrive with getApproverShell() in the same single request.
+  // loadPending is still used by the realtime subscription below.
+
+  // ── Realtime: refetch pending approvals when a TAF is routed to me ──
+  // A submission becomes "up for my approval" via INSERT (adviser submits
+  // and routes to me) or UPDATE (previous approver approves → current
+  // role becomes mine). Listen for both and refetch so the pending list
+  // and the bell badge update instantly. RLS passes for rows routed to me.
   useEffect(() => {
     let sub: { unsubscribe: () => void } | null = null;
     let supabase: ReturnType<typeof createClient> | null = null;
@@ -219,7 +310,7 @@ export default function ApproverDashboard({ role }: { role: Role }) {
         .subscribe();
       sub = channel;
     } catch {
-
+      // realtime unavailable — polling fallback in the initial load covers it.
     }
     return () => {
       sub?.unsubscribe();
@@ -233,6 +324,8 @@ export default function ApproverDashboard({ role }: { role: Role }) {
     window.addEventListener("resize", handleResize);
     return () => window.removeEventListener("resize", handleResize);
   }, []);
+
+  // ── Approved table filters ───────────────────────────────
   const years = Array.from(
     new Set(approved.map((a) => a.academicYear)),
   ).sort((a, b) => b.localeCompare(a));
@@ -246,6 +339,8 @@ export default function ApproverDashboard({ role }: { role: Role }) {
     const matchesYear = yearFilter === "all" || a.academicYear === yearFilter;
     return matchesSearch && matchesYear;
   });
+
+  // ── Export the filtered Approved TAF table to PDF ─────────────────
   function esc(s: string | null | undefined): string {
     return (s ?? "")
       .replace(/&/g, "&amp;")
@@ -328,6 +423,9 @@ export default function ApproverDashboard({ role }: { role: Role }) {
       }, 400);
     }, 50);
   }
+
+  /** Canonical URL for a submission review row (used for both navigation and
+   *  prefetching). */
   function submissionHref(id: string): string | null {
     if (!currentUser) return null;
     return `${rolePath(role)}/${currentUser.id}/submission/${id}?from=${tab}`;
@@ -357,8 +455,8 @@ export default function ApproverDashboard({ role }: { role: Role }) {
     }
     return (
       <>
-      {
-}
+      {/* Phones: card per submission — the five-column table needs desktop
+          width, and the pending/approved tabs are the busiest lists in the app. */}
       <div className="divide-y sm:hidden">
         {rows.map((row) => (
           <button
@@ -418,6 +516,9 @@ export default function ApproverDashboard({ role }: { role: Role }) {
               <tr
                 key={row.id}
                 onClick={() => openSubmission(row.id)}
+                // Warm the review route (RSC payload + its ~350 kB of JS) as
+                // soon as the pointer is over the row — opening a pending or
+                // approved TAF was a cold navigation otherwise.
                 onMouseEnter={() => {
                   const href = submissionHref(row.id);
                   if (href) router.prefetch(href);
@@ -465,6 +566,8 @@ export default function ApproverDashboard({ role }: { role: Role }) {
       </>
     );
   }
+
+  // ── Loading ──────────────────────────────────────────────
   if (loading) {
     return (
       <div className="flex min-h-screen items-center justify-center">
@@ -475,7 +578,7 @@ export default function ApproverDashboard({ role }: { role: Role }) {
 
   return (
     <div className="flex min-h-screen flex-col bg-gray-50/50">
-      {}
+      {/* Header */}
       <header className="sticky top-0 z-30 flex h-14 items-center gap-3 border-b bg-white px-4 shadow-sm">
         <button
           onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
@@ -486,8 +589,8 @@ export default function ApproverDashboard({ role }: { role: Role }) {
 
         <h1 className="text-lg font-semibold text-[#333] flex-1">AIThink</h1>
 
-        {
-}
+        {/* Notifications bell → dropdown of the user's notifications
+            (unread badge that decrements as items are viewed, max 5 shown) */}
         <NotificationBell
           initialNotifications={initialNotifications}
           initialOwnedGroupSlugs={initialOwnedGroupSlugs}
@@ -496,11 +599,15 @@ export default function ApproverDashboard({ role }: { role: Role }) {
           allHref={`${rolePath(role)}/${currentUser?.id}/notifications`}
           hrefFor={(n, ctx) =>
             n.submissionId
-              ?
+              ? // An OWNED-group submission opens inside that group — the same
+                // destination the notifications page sends it to. Every other
+                // submission keeps the flat review route.
                 ctx.ownedGroupSlug
                 ? `${rolePath(role)}/${currentUser?.id}/group/${ctx.ownedGroupSlug}/submission/${n.submissionId}`
                 : `${rolePath(role)}/${currentUser?.id}/submission/${n.submissionId}`
-              :
+              : // An advisory-group notice (someone joined / left) belongs on the
+                // group tab, which is where the roster lives. Roles that cannot
+                // own groups fall back to the TAF Submissions tab.
                 (n.type === "joined_group" || n.type === "left_group") &&
                   role !== "vcrdes"
                 ? `${rolePath(role)}/${currentUser?.id}?tab=groups`
@@ -508,7 +615,7 @@ export default function ApproverDashboard({ role }: { role: Role }) {
           }
         />
 
-        {}
+        {/* User menu */}
         <UserMenu
           user={currentUser}
           userId={currentUser?.id || ""}
@@ -517,7 +624,7 @@ export default function ApproverDashboard({ role }: { role: Role }) {
       </header>
 
       <div className="flex flex-1 relative">
-        {}
+        {/* Desktop sidebar */}
         <ApproverSidebar
           activeTab={effectiveTab}
           expanded={sidebarExpanded}
@@ -527,7 +634,7 @@ export default function ApproverDashboard({ role }: { role: Role }) {
           onToggle={() => setSidebarExpanded((v) => !v)}
         />
 
-        {}
+        {/* Mobile drawer */}
         {mobileMenuOpen && (
           <div className="fixed inset-0 z-20 md:hidden">
             <div
@@ -540,6 +647,9 @@ export default function ApproverDashboard({ role }: { role: Role }) {
                   <button
                     key={item.id}
                     onClick={() => {
+                      // A granted page item (e.g. Feedback) carries a real
+                      // route and NO tab — the drawer must navigate to it
+                      // instead of switching an in-page tab.
                       if (item.tab) setTab(item.tab as Tab);
                       else if (item.href) router.push(item.href);
                       setMobileMenuOpen(false);
@@ -564,9 +674,9 @@ export default function ApproverDashboard({ role }: { role: Role }) {
           </div>
         )}
 
-        {}
+        {/* Main content */}
         <main className="flex-1 p-4 md:p-6">
-          {}
+          {/* Nothing held at all — a notice, never an empty shell. */}
           {view === null && (
             <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-gray-200 bg-white py-16 text-center">
               <h3 className="mb-1 text-lg font-medium text-[#333]">
@@ -579,19 +689,19 @@ export default function ApproverDashboard({ role }: { role: Role }) {
             </div>
           )}
 
-          {}
+          {/* ── Executive Summary (own tab, first position; DEAN only) ── */}
           {view === "executive-summary" && isExecutiveRole && (
             <ExecutiveSummary initialData={initialExecutiveSummary} />
           )}
 
-          {}
+          {/* ── Research Analytics ───────────────────────── */}
           {view === "analytics" && (
             <ResearchAnalytics role={role} userId={currentUser?.id ?? ""} initialData={initialAnalytics} />
           )}
 
-          {}
-          {
-}
+          {/* ── Advisory Group (associate dean + dean only) ── */}
+          {/* Same placement and shape as the adviser's group section, so the
+              two roles manage their groups from the same kind of screen. */}
           {view === "groups" &&
             (role === "associate_dean" || role === "dean") && (
               <SupervisorAdvisoryGroups
@@ -602,7 +712,7 @@ export default function ApproverDashboard({ role }: { role: Role }) {
               />
             )}
 
-          {}
+          {/* ── TAF Submissions (pending) ───────────────────── */}
           {view === "pending" && (
             <div className="rounded-2xl border border-gray-200 bg-white shadow-sm overflow-hidden">
               <div className="flex items-center justify-between border-b px-4 py-3">
@@ -621,14 +731,14 @@ export default function ApproverDashboard({ role }: { role: Role }) {
             </div>
           )}
 
-          {}
+          {/* ── Approved TAFs ───────────────────────────────── */}
           {view === "approved" && (
             <div className="rounded-2xl border border-gray-200 bg-white shadow-sm overflow-hidden">
               <div className="flex flex-col sm:flex-row sm:items-center gap-3 border-b px-4 py-3">
                 <h3 className="text-sm font-semibold text-[#333] flex-1">
                   Approved TAFs
                 </h3>
-                {}
+                {/* Search */}
                 <div className="relative">
                   <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-gray-400" />
                   <input
@@ -638,7 +748,7 @@ export default function ApproverDashboard({ role }: { role: Role }) {
                     className="w-56 rounded-lg border border-gray-200 pl-8 pr-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-[#8B1A1A]/30"
                   />
                 </div>
-                {}
+                {/* Year filter */}
                 <div className="relative">
                   <CalendarDays className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-gray-400" />
                   <select
@@ -654,7 +764,7 @@ export default function ApproverDashboard({ role }: { role: Role }) {
                     ))}
                   </select>
                 </div>
-                {}
+                {/* Export */}
                 <button
                   type="button"
                   onClick={exportApprovedPdf}

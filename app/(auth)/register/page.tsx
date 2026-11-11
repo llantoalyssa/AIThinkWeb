@@ -12,6 +12,10 @@ import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { Eye, EyeOff, Loader2 } from "lucide-react";
 
+// ── Name character rules ────────────────────────────────────
+// Names may only contain letters (any script, so ñ/é are fine), spaces, and the
+// punctuation real names need: hyphen (Dela-Cruz), apostrophe (O'Brien) and
+// period (Jr., M.). Digits and every other symbol are rejected.
 const NAME_ALLOWED_RE = /^[\p{L} .'-]+$/u;
 // A suffix additionally allows a comma ("Jr., III").
 const SUFFIX_ALLOWED_RE = /^[\p{L} .,'-]+$/u;

@@ -1,5 +1,17 @@
 "use client";
 
+// ============================================================
+// Set-a-new-password page — the destination of the "Forgot
+// password" email link.
+//
+// Two ways the link can arrive:
+//  1. token_hash + type (preferred) — verified with verifyOtp. Needs NO
+//     client-stored code_verifier, so the link works even when it's opened in
+//     a DIFFERENT browser/device than the one that requested it.
+//  2. code (PKCE) — exchanged on the CLIENT. Only works in the SAME browser
+//     that requested the reset (the code_verifier lives in its storage), so
+//     this is kept only as a fallback.
+// ============================================================
 
 import { Suspense, useEffect, useRef, useState, type FormEvent } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -35,8 +47,13 @@ function UpdatePasswordForm() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Guard so the effect only attempts the exchange once — after we router.replace
+  // away the one-time code, the effect fires again with no code and must NOT
+  // wipe the freshly-established session.
   const doneRef = useRef(false);
 
+  // Verify the recovery link. token_hash + verifyOtp is preferred (works from
+  // any browser); the PKCE `code` exchange is a same-browser fallback.
   useEffect(() => {
     let cancelled = false;
     async function init() {
@@ -46,6 +63,7 @@ function UpdatePasswordForm() {
       const otpType = searchParams.get("type");
       const code = searchParams.get("code");
 
+      // ── Preferred: token_hash + verifyOtp (no code_verifier needed) ──
       if (tokenHash && otpType) {
         const { error } = await supabase.auth.verifyOtp({
           type: otpType as EmailOtpType,
@@ -65,10 +83,12 @@ function UpdatePasswordForm() {
         }
         setSessionOk(true);
         setVerifying(false);
+        // Strip the one-time token from the URL so a refresh doesn't retry it.
         router.replace("/auth/update-password", { scroll: false });
         return;
       }
 
+      // ── Fallback: PKCE code exchange (same browser only) ──
       if (code) {
         const { error } = await supabase.auth.exchangeCodeForSession(code);
         doneRef.current = true;

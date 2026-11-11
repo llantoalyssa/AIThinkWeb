@@ -10,6 +10,7 @@ import TopicAbstractFormEditor from '@/components/topic-abstract-form-editor'
 import SidebarCollapseHandle from "@/components/sidebar-collapse-handle";
 import RecentTafs from '@/components/recent-tafs'
 import { useUnreadNotifications } from '@/hooks/use-unread-notifications'
+import StudentNotificationsBell from '@/components/student-notifications-bell'
 import { UserMenu } from '@/components/user-menu'
 import { navItemsFor, type NavItem } from '@/components/nav-items'
 import {
@@ -123,6 +124,7 @@ export default function StudentTafEditorPage({
           {isNew ? 'New Topic Abstract' : title || 'Loading...'}
         </h1>
 
+        <StudentNotificationsBell userId={userId} />
         <UserMenu user={currentUser} userId={userId} routeBase="/dashboard/student" />
       </header>
 

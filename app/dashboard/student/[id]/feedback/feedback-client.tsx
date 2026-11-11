@@ -8,6 +8,7 @@ import { submitFeedback } from '@/server/actions/feedback'
 import RecentTafs from '@/components/recent-tafs'
 import SidebarCollapseHandle from "@/components/sidebar-collapse-handle";
 import { useUnreadNotifications } from '@/hooks/use-unread-notifications'
+import StudentNotificationsBell from '@/components/student-notifications-bell'
 import { UserMenu } from '@/components/user-menu'
 import { toast } from 'sonner'
 import { navItemsFor, type NavItem } from '@/components/nav-items'
@@ -94,6 +95,9 @@ export default function StudentFeedbackPage({
         </button>
 
         <h1 className="text-lg font-semibold text-[#333] flex-1">AIThink</h1>
+        {/* One bell on every student page — the header was inconsistent: it
+            appeared on the dashboard/TAF/profile only. */}
+        <StudentNotificationsBell userId={userId} />
         <UserMenu user={currentUser} userId={userId} routeBase="/dashboard/student" />
       </header>
 

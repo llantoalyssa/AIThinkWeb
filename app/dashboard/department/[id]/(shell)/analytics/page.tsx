@@ -1,3 +1,19 @@
+// ============================================================
+// /dashboard/department/[id]/analytics — Research Analytics for the department.
+//
+// The department holds `analytics.view` by DEFAULT (migration 053) and, until
+// this route existed, had nowhere to spend it: the department console could
+// tick or untick that box with no visible effect on any screen. Same story for
+// /approved and /executive-summary beside it.
+//
+// The component is the approver roles' own (no fork). Its queries run on the USER
+// client, so RLS decides the scope — the department is allowed to read every
+// submission (migration 055), which is what makes its numbers college-wide.
+//
+// READ-ONLY: nothing here writes, and the grant is checked before a single row
+// is queried.
+// ============================================================
+
 import { redirect } from "next/navigation";
 import { ShieldAlert } from "lucide-react";
 

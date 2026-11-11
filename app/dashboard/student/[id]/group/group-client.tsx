@@ -17,6 +17,7 @@ import { getStudentJoinedGroups, joinGroupByCode, type StudentGroupMembership } 
 import { useUnreadNotifications } from '@/hooks/use-unread-notifications'
 import RecentTafs from '@/components/recent-tafs'
 import SidebarCollapseHandle from "@/components/sidebar-collapse-handle";
+import StudentNotificationsBell from '@/components/student-notifications-bell'
 import { UserMenu } from '@/components/user-menu'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
@@ -192,6 +193,9 @@ export default function StudentGroupListPage() {
           AIThink
         </h1>
 
+        {/* One bell on every student page — the header was inconsistent: it
+            appeared on the dashboard/TAF/profile only. */}
+        <StudentNotificationsBell userId={userId} />
         <UserMenu user={currentUser} userId={userId} routeBase="/dashboard/student" />
       </header>
 

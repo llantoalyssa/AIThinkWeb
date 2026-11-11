@@ -1,4 +1,20 @@
-
+// ============================================================
+// /dashboard/adviser/[id]/journals — READ-ONLY Journals for the adviser.
+//
+// Reached by an account the department console granted `pages.journals`: the
+// item appears in this role's side nav (components/approver-sidebar.tsx maps the
+// grant to THIS route), and the page opens inside the role's own chrome.
+//
+// READ-ONLY BY CONSTRUCTION. Journals are the department's library: only
+// `journals.manage` may upload, re-embed, edit or delete, and that permission is
+// department-only (migration 058) — so `canManage` is computed from the grants
+// and is false for every approver. The list itself is the SAME component the
+// department renders, so a viewer can never be shown a control that would be
+// refused, and the two surfaces cannot drift apart.
+//
+// A hand-typed URL by an UNGRANTED account renders the no-access notice instead
+// of an empty table; getAllJournals() and RLS refuse the data regardless.
+// ============================================================
 
 import { redirect } from "next/navigation";
 import { Eye } from "lucide-react";

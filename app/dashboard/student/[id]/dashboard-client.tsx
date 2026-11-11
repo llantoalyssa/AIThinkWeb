@@ -23,7 +23,7 @@ import {
   DialogFooter,
 } from '@/components/ui/dialog'
 import { toast } from 'sonner'
-import NotificationBell from '@/components/notification-bell'
+import StudentNotificationsBell from '@/components/student-notifications-bell'
 import RecentTafs from '@/components/recent-tafs'
 import StudentStatsDashboard from '@/components/student-stats-dashboard'
 import { navItemsFor, type NavItem } from '@/components/nav-items'
@@ -293,15 +293,7 @@ export default function StudentDashboardPage({
             student (the side-nav item was removed for every role). It sits with
             the user menu on the RIGHT, exactly like the approver and department
             headers; placed before the spacer it drifted to the left of centre. */}
-        <NotificationBell
-          routerPush={(href) => router.push(href)}
-          allHref={`/dashboard/student/${urlUserId}/notifications`}
-          hrefFor={(n) =>
-            n.submissionId
-              ? `/dashboard/student/${urlUserId}/taf`
-              : `/dashboard/student/${urlUserId}/notifications`
-          }
-        />
+        <StudentNotificationsBell userId={urlUserId} />
 
         {/* User menu */}
         <div className="relative" ref={userMenuRef}>

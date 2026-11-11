@@ -21,6 +21,8 @@ import {
 } from "@/components/ui/select";
 import { AlertTriangle, Loader2, Lock } from "lucide-react";
 import { USER_ROLES, type UserRole } from "@/lib/constants";
+// Type-only import: the values behind these live in a "use server" module and
+// are read by the department page (this component only renders what it is given).
 import type {
   PermissionChange,
   PermissionGroup,
@@ -30,6 +32,8 @@ import {
   permissionAppliesToRole,
   permissionFixedForRole,
 } from "@/lib/permissions";
+
+// Re-use the server action types inline so we're decoupled
 type UserFormData = {
   firstName: string;
   lastName: string;
@@ -41,22 +45,49 @@ type UserFormData = {
   role: UserRole;
   isActive: boolean;
 };
+
+// What the dialog hands back to the page. `permissionChanges` carries ONLY the
+// permission keys the department actually touched: granted:true = explicit
+// GRANT, granted:false = explicit DENY, granted:null = "no override" (the page
+// deletes the row, restoring the role default).
 export type UserDialogSubmit = UserFormData & {
   permissionChanges: PermissionChange[];
 };
+
+/**
+ * Everything the Permissions section needs, all PROVIDED by the department page
+ * getDepartmentShell → readPermissionConsoleData(), preloaded with the page).
+ * Nothing here is hardcoded, so the dialog cannot disagree with the tables.
+ */
 export type PermissionPanelData = {
-
+  /** The catalogue, grouped for display. */
   groups: PermissionGroup[];
-
+  /** role → the permission keys that role gets by default. */
   roleDefaults: Record<string, string[]>;
-
+  /** Explicit override rows for this account (true = GRANT, false = DENY). */
   overrides: Record<string, boolean>;
+  // NOTE: there is no `effective` field any more. It is DERIVED here from
+  // roleDefaults + overrides with the same rule has_permission() uses
+  // (lib/permissions.ts → resolvePermissionState), so the boxes are correct on
+  // the first paint instead of waiting for a server read to land.
 };
+
+// Which rows warn is decided by the STRUCTURAL column in the permissions table —
+// never by a key list here. A structural permission changes WHO approves, not
+// just what is visible, so those rows say so; the ones with a known consequence
+// spell it out.
 const STRUCTURAL_CONSEQUENCES: Record<string, string> = {
   "groups.create": "This person becomes the FIRST APPROVER for groups they create.",
 };
 const STRUCTURAL_WARNING_FALLBACK =
   "Structural: this changes who approves, not just what is visible.";
+
+// RESERVED rows (public.permissions.department_only — migration 058: user
+// management, journal uploads, feedback replies) can only ever be held by a
+// DEPARTMENT account. On any other target they render unchecked and read-only
+// with a "department only" note; setUserPermission() refuses them and a trigger
+// in the database raises, so the checkbox is a hint, never the rule.
+
 function structuralWarning(key: string): string {
   return STRUCTURAL_CONSEQUENCES[key] ?? STRUCTURAL_WARNING_FALLBACK;
 }
@@ -65,18 +96,36 @@ type UserDialogProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   mode: "create" | "edit";
+  /**
+   * Roles this dialog may offer. The Users page lists students and staff in
+   * separate tabs, so the role list must match the tab the dialog was opened
+   * from — a "Department" option inside the Students tab is a mis-click waiting
+   * to happen. Omitted = every role (previous behaviour).
+   */
   allowedRoles?: UserRole[];
-
+  /** Pre-filled data for edit mode */
   initialData?: Partial<UserFormData> & { id?: string };
+  /**
+   * Role of the SIGNED-IN account. The Permissions section only exists for a
+   * department account.
+   */
   actorRole?: UserRole | null;
-
+  /** Id of the signed-in account — used to hide the section on your OWN account. */
   currentUserId?: string | null;
+  /**
+   * Permission data for the account being edited. Null/omitted → the section is
+   * not rendered at all (non-department viewer, or no data loaded yet).
+   */
   permissions?: PermissionPanelData | null;
   onSubmit: (data: UserDialogSubmit) => Promise<{
     success: boolean;
     error?: string;
     cancelled?: boolean;
   }>;
+  /**
+   * Fired when the user cancels. The parent uses this to roll back a create
+   * that was already in flight (a server action can't be aborted mid-request).
+   */
   onCancel?: () => void;
 };
 
@@ -93,7 +142,14 @@ const EMPTY_FORM: UserFormData = {
 };
 
 const ROLE_OPTIONS = Object.entries(USER_ROLES) as [UserRole, string][];
+
+/** SR Code shape: two digits, a dash, five digits (e.g. 23-93627). */
 const SR_CODE_RE = /^\d{2}-\d{5}$/;
+
+// Name inputs accept Unicode letters, spaces, hyphens, apostrophes and periods
+// (e.g. José, Dela Cruz, O'Brien). The middle initial is a SINGLE letter plus an
+// optional final period (legacy values like "M." stay valid) — never two
+// letters, digits or other punctuation.
 const NAME_DISALLOWED_RE = /[^\p{L} .'-]/gu;
 const MIDDLE_DISALLOWED_RE = /[^\p{L}.]/gu;
 const NAME_ALLOWED_RE = /^[\p{L} .'-]+$/u;
@@ -103,11 +159,21 @@ function sanitizeName(value: string): string {
   return value.replace(NAME_DISALLOWED_RE, "");
 }
 function sanitizeMiddleInitial(value: string): string {
-
+  // Collapse to one letter, keeping a single optional trailing period.
   const cleaned = value.replace(MIDDLE_DISALLOWED_RE, "");
   const letter = cleaned.replace(/\./g, "").slice(0, 1);
   return cleaned.includes(".") && letter ? `${letter}.` : letter;
 }
+
+/**
+ * Clear the body locks Radix layers set while a popover/dialog is open.
+ *
+ * `pointer-events: none` left on <body> makes every control on the page ignore
+ * clicks — the "frozen Users page". Radix normally restores it, but a Select
+ * whose parent dialog unmounts first can miss its own cleanup and re-apply the
+ * lock AFTER the dialog's. Repeating the sweep (immediately, then shortly after
+ * the close) makes the order irrelevant.
+ */
 function releaseBodyLocks() {
   if (typeof document === "undefined") return;
   const clear = () => {
@@ -132,7 +198,7 @@ export default function UserDialog({
   onSubmit,
   onCancel,
 }: UserDialogProps) {
-
+  // Compute initial form state based on props (component remounts via key)
   const getInitialForm = (): UserFormData => {
     if (mode === "edit" && initialData) {
       return {
@@ -152,8 +218,14 @@ export default function UserDialog({
 
   const [form, setForm] = useState<UserFormData>(getInitialForm);
   const [submitting, setSubmitting] = useState(false);
+  // The role Select is CONTROLLED so it can be closed before its parent Dialog
+  // unmounts — see the cleanup effect below.
   const [roleSelectOpen, setRoleSelectOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Permission keys the department TOUCHED, and nothing else: true = GRANT,
+  // false = DENY, null = "reset to the role default" (delete the override row).
+  // Untouched rows are never written, so an unchanged account keeps whatever the
+  // database already says about it.
   const [permissionEdits, setPermissionEdits] = useState<
     Record<string, boolean | null>
   >({});
@@ -164,6 +236,11 @@ export default function UserDialog({
   ) {
     setForm((prev) => ({ ...prev, [field]: value }));
   }
+
+  // ── Permissions section (derived, nothing stored) ──────────
+  // Shown ONLY for a department account, and NEVER on your own account: a
+  // department account must not widen (or narrow) its own access. The same rule
+  // is enforced server-side by setUserPermission().
   const isSelf =
     mode === "edit" && !!currentUserId && initialData?.id === currentUserId;
   const permissionPanel =
@@ -173,14 +250,31 @@ export default function UserDialog({
     permissions.groups.length > 0
       ? permissions
       : null;
+
+  // The role selected in the form, not the stored one — the department can change
+  // the account type and the permissions in the same save.
   const defaultKeys = new Set(
     permissionPanel
       ? (permissionPanel.roleDefaults[form.role] ?? [])
       : []
   );
+
+  /**
+   * Rows the selected account type cannot hold at all (`applies_to`, migration
+   * 060): a `pages.users` grant means nothing to an adviser, because the only
+   * Users page is the department's. They are not rendered — offering them is how
+   * the nav used to grow a dead department link.
+   */
   function appliesToRole(permission: PermissionItem): boolean {
     return permissionAppliesToRole(permission.applies_to, form.role);
   }
+
+  /**
+   * Rows that ARE the account type (`fixed_roles`, migration 060): an adviser
+   * creates advisory groups and sits in the approval chain by definition, and a
+   * dean owns the Executive Summary. Those render checked + locked instead of as
+   * a toggle that changes nothing.
+   */
   function isFixed(permission: PermissionItem): boolean {
     return permissionFixedForRole(permission.fixed_roles, form.role);
   }
@@ -193,6 +287,12 @@ export default function UserDialog({
         }))
         .filter((group) => group.permissions.length > 0)
     : [];
+
+  /**
+   * A RESERVED (department_only) row is read-only unless the target account's
+   * role — the one selected in the form, since the role can change in the same
+   * save — is 'department'. Nothing here hardcodes which keys those are.
+   */
   function isReserved(permission: PermissionItem): boolean {
     return permission.department_only && form.role !== "department";
   }
@@ -207,7 +307,7 @@ export default function UserDialog({
   function defaultApplies(key: string): boolean {
     return defaultKeys.has(key);
   }
-
+  /** The value the box shows: what has_permission() would answer if saved now. */
   function effectiveValue(key: string): boolean {
     if (hasEdit(key)) {
       const edit = permissionEdits[key];
@@ -215,14 +315,14 @@ export default function UserDialog({
     }
     const override = serverOverride(key);
     if (override !== undefined) return override;
-
+    // override → role default → false, exactly as public.has_permission().
     return defaultApplies(key);
   }
-
+  /** True when this row does not simply follow the role default. */
   function isChanged(key: string): boolean {
-
+    // Explicitly reset back to the role default → no longer "changed".
     if (hasEdit(key) && permissionEdits[key] === null) return false;
-
+    // An explicit override row IS a deviation from the role default.
     if (serverOverride(key) !== undefined) return true;
     return effectiveValue(key) !== defaultApplies(key);
   }
@@ -230,16 +330,28 @@ export default function UserDialog({
   function togglePermission(key: string, next: boolean) {
     setPermissionEdits((prev) => ({ ...prev, [key]: next }));
   }
-
+  /** "Reset to role default": send null → the override row is DELETED on save. */
   function resetPermission(key: string) {
     setPermissionEdits((prev) => ({ ...prev, [key]: null }));
   }
+
+  /**
+   * The changes to persist: only keys the department touched, and a key whose
+   * value matches the role default is sent as null (delete the override) — so a
+   * later role change cannot leave a stale grant behind.
+   */
   function buildPermissionChanges(): PermissionChange[] {
     if (!permissionPanel) return [];
     const changes: PermissionChange[] = [];
     for (const group of permissionPanel.groups) {
       for (const item of group.permissions) {
+        // A reserved row is read-only on a non-department account: a tick left
+        // behind by switching the role away must never reach the server (which
+        // would refuse it anyway).
         if (isReserved(item)) continue;
+        // A row this account TYPE cannot hold, or one that IS the account type,
+        // is never written: setUserPermission() refuses both and the migration
+        // 060 trigger raises for either.
         if (!appliesToRole(item) || isFixed(item)) continue;
         if (!hasEdit(item.key)) continue;
         const value = effectiveValue(item.key);
@@ -252,6 +364,9 @@ export default function UserDialog({
     }
     return changes;
   }
+
+  // Format SR Code as digits, auto-inserting a dash after the first 2
+  // digits: "00-00000". Strips non-digits; max 2 + 5 digits. Optional field.
   function formatSrCode(raw: string): string {
     const digits = raw.replace(/\D/g, "").slice(0, 7);
     if (digits.length <= 2) return digits;
@@ -260,8 +375,10 @@ export default function UserDialog({
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (submitting) return;
+    if (submitting) return; // ignore double submits / re-entrancy
     setError(null);
+
+    // Client-side validation
     if (!form.firstName || form.firstName.trim().length < 2) {
       setError("First name must be at least 2 characters.");
       return;
@@ -294,6 +411,9 @@ export default function UserDialog({
       setError("Only @g.batstate-u.edu.ph email addresses are allowed.");
       return;
     }
+    // Students: the email's local part must BE the SR code — the same rule the
+    // registration page enforces. Checked here too so the office gets the
+    // message before a round trip.
     if (
       isStudentScope &&
       form.email.split("@")[0].toLowerCase() !== form.srCode.trim().toLowerCase()
@@ -311,12 +431,16 @@ export default function UserDialog({
     setSubmitting(true);
     const result = await onSubmit({
       ...form,
+      // Staff accounts carry no SR code. Clearing it here also covers the case
+      // where the role was switched inside the dialog.
       srCode: isStudentScope ? form.srCode : "",
       permissionChanges: buildPermissionChanges(),
     });
     setSubmitting(false);
 
     if (result.cancelled) {
+      // The user cancelled while the request was in flight and the parent
+      // already rolled it back — don't surface an error or "close" again.
       return;
     }
 
@@ -327,25 +451,65 @@ export default function UserDialog({
       setError(result.error || "An unexpected error occurred.");
     }
   }
+
+  // Cancel: never a submitter, and never blocked by an in-flight request —
+  // cancelling must always be possible. The parent decides whether an already
+  // running create needs to be undone.
   function handleCancel() {
     setError(null);
     onCancel?.();
     releaseBodyLocks();
     onOpenChange(false);
   }
+
+
+  /**
+   * Safety net for the Radix nested-overlay bug: if the dialog is closed while a
+   * popover was still mounted, <body> can keep `pointer-events: none` (and the
+   * scroll lock). The dialog still closes, but every control underneath is dead
+   * — the "Users page went unresponsive" report. Clear it only when nothing else
+   * is genuinely open.
+   */
   useEffect(() => {
     if (open) return;
+    /**
+     * This used to bail out when ANY `[data-radix-popper-content-wrapper]`
+     * existed — but an ORPHANED select portal (left behind when the dialog
+     * unmounted first) matches that selector too, so the guard cancelled the
+     * very cleanup it was there to perform. That is why the freeze survived on
+     * the Students tab. Clear the locks unconditionally once the dialog is
+     * closed; releasing body styles is harmless even if a popover is genuinely
+     * open, because Radix restores its own lock on close.
+     */
     const id = window.setTimeout(releaseBodyLocks, 0);
     return () => window.clearTimeout(id);
   }, [open]);
 
   const isCreate = mode === "create";
+  /**
+   * Is this dialog for STUDENT accounts? The Users page opens it from either
+   * tab: the Students tab allows only `student`, the Faculty & Staff tab never
+   * does. SR Code belongs to students (it IS their username), so the field is
+   * shown and required there and hidden entirely for staff.
+   */
   const isStudentScope = !allowedRoles || allowedRoles.includes("student");
 
   return (
     <Dialog
       open={open}
       onOpenChange={(next) => {
+        /**
+         * Closing the dialog while the role Select is open used to leave Radix's
+         * body lock behind (`pointer-events: none`), so the whole Users page
+         * ignored every click — the "frozen page".
+         *
+         * Setting the Select closed in the SAME commit is not enough: React
+         * unmounts the Dialog (and its portal) before the Select's own exit
+         * cleanup runs, which orphans the popover's invisible overlay on top of
+         * the page. So close the Select first, let it finish, and close the
+         * dialog on the next frame. The body-style sweep afterwards is a
+         * belt-and-braces guard for any lock that still slips through.
+         */
         if (next) {
           onOpenChange(true);
           return;
@@ -381,7 +545,7 @@ export default function UserDialog({
             </div>
           )}
 
-          {}
+          {/* Name fields */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div className="space-y-2">
               <Label htmlFor="first-name">
@@ -437,9 +601,9 @@ export default function UserDialog({
             </div>
           </div>
 
-          {
-
-}
+          {/* SR Code & Email — SR Code is a STUDENT field: faculty and staff
+              have no SR code, so the input is not rendered for them at all
+              (a hidden-but-required field would block every staff save). */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             {isStudentScope && (
               <div className="space-y-2">
@@ -475,7 +639,7 @@ export default function UserDialog({
             </div>
           </div>
 
-          {}
+          {/* Password (create only) */}
           {isCreate && (
             <div className="space-y-2">
               <Label htmlFor="password">
@@ -493,7 +657,7 @@ export default function UserDialog({
             </div>
           )}
 
-          {}
+          {/* Role */}
           <div className="space-y-2">
             <Label htmlFor="role">
               Role <span className="text-red-500">*</span>
@@ -520,7 +684,7 @@ export default function UserDialog({
             </Select>
           </div>
 
-          {}
+          {/* Status */}
           <div className="space-y-2">
             <Label>Account Status</Label>
             <div className="flex items-center gap-3 rounded-lg border p-3">
@@ -553,7 +717,7 @@ export default function UserDialog({
             </div>
           </div>
 
-          {}
+          {/* Permissions — department accounts only, and never your own */}
           {permissionPanel && (
             <div className="space-y-3 rounded-lg border p-3">
               <div>
@@ -571,8 +735,8 @@ export default function UserDialog({
                 </p>
               </div>
 
-              {
-}
+              {/* Two columns on a wide dialog: the catalogue has enough rows that
+                  a single column turns the permission list into a long scroll. */}
               {visibleGroups.length === 0 && (
                 <p className="rounded-md border border-dashed border-gray-200 bg-gray-50 p-3 text-xs text-gray-500">
                   Nothing to configure — a {USER_ROLES[form.role]} account has no
@@ -587,7 +751,12 @@ export default function UserDialog({
                     {group.group}
                   </p>
                   {group.permissions.map((permission) => {
+                    // Reserved rows are never shown ticked for a non-department
+                    // target and can't be toggled — see isReserved().
                     const reserved = isReserved(permission);
+                    // Part of the account type (migration 060): always ON, shown
+                    // ticked and locked so the department can see it is held
+                    // without being offered a toggle that would do nothing.
                     const fixed = isFixed(permission);
                     const checked = fixed
                       ? true
@@ -653,8 +822,8 @@ export default function UserDialog({
                                 {permission.description}
                               </p>
                             )}
-                            {
-}
+                            {/* Which rows carry this warning is decided by the
+                                `structural` column in the permissions table. */}
                             {permission.structural && (
                               <p
                                 className={`mt-1 flex items-start gap-1 text-xs ${

@@ -1,4 +1,16 @@
 "use client";
+
+// ============================================================
+// AnnotationPanel — collapsible right-side panel listing
+// Google-Docs-style comment threads on a submitted TAF.
+//
+// Threads are grouped by section (field). Clicking the "jump"
+// or the snippet scrolls to / highlights that text in the
+// document. Actions: reply to any thread you can see; the
+// thread author can resolve/reopen; the author of any comment
+// (root or reply) can Edit or Delete it.
+// ============================================================
+
 import { useState } from "react";
 import {
   MessageSquareText,
@@ -39,20 +51,22 @@ type Props = {
   open: boolean;
   onToggle: () => void;
   annotations: Annotation[];
-
+  /** current user's id, to know who may resolve/edit/delete. */
   currentUserId: string | null;
+  /** Read-only viewer (e.g. a group-member student): sees threads but no
+   *  composer/reply/resolve/edit/delete. */
   readOnly?: boolean;
-
+  /** Resolve/unresolve a thread root. */
   onResolve: (threadId: string, resolved: boolean) => Promise<void>;
-
+  /** Reply to a thread root. */
   onReply: (threadId: string, comment: string) => Promise<boolean>;
-
+  /** Toggle the panel's pinned/collapsed side state. */
   onJumpToField: (fieldKey: AnnotationFieldKey) => void;
-
+  /** Scroll to & flash the exact highlighted snippet of a thread. */
   onJumpToThread: (thread: Annotation) => void;
-
+  /** Edit an annotation/reply (author only). */
   onEdit: (annotationId: string, comment: string) => Promise<boolean>;
-
+  /** Delete an annotation/reply (author only). */
   onDelete: (annotationId: string) => Promise<boolean>;
 };
 
@@ -70,6 +84,9 @@ function roleName(role: string): string {
   if (role === "student") return "Student";
   return role.replace("_", " ");
 }
+
+// ── Editable comment body (shared by roots & replies) ──────────────
+
 function CommentBody({
   ann,
   currentUserId,
@@ -143,6 +160,8 @@ function CommentBody({
         {ann.comment}
       </p>
       {canEdit && (
+        // Always visible: touch devices have no hover, so a hover-revealed
+        // control is invisible AND unclickable on phones/tablets.
         <div className="flex items-center gap-2 mt-1">
           <button
             type="button"
@@ -247,7 +266,7 @@ function ThreadCard({
         thread.resolved ? "border-gray-200 bg-gray-50 opacity-75" : "border-amber-200 bg-white"
       }`}
     >
-      {}
+      {/* Header */}
       <div className="flex items-start gap-2">
         <div className={`mt-0.5 h-6 w-6 shrink-0 rounded-full ${ROLE_COLOR[thread.authorRole] || "bg-gray-400"} flex items-center justify-center text-[10px] font-bold text-white`}>
           {(thread.authorName || "?").charAt(0).toUpperCase()}
@@ -284,7 +303,7 @@ function ThreadCard({
         )}
       </div>
 
-      {}
+      {/* Replies */}
       {thread.replies.length > 0 && (
         <div className="mt-2 pl-8 border-l-2 border-gray-100">
           {thread.replies.map((r) => (
@@ -300,7 +319,7 @@ function ThreadCard({
         </div>
       )}
 
-      {}
+      {/* Actions */}
       <div className="mt-2 flex items-center justify-between">
         <div className="flex items-center gap-3 text-[11px]">
           {!readOnly && (
@@ -336,7 +355,7 @@ function ThreadCard({
         </div>
       </div>
 
-      {}
+      {/* Reply input */}
       {!readOnly && showReply && (
         <div className="mt-2 flex items-start gap-2">
           <textarea
@@ -375,7 +394,7 @@ export default function AnnotationPanel({
   onEdit,
   onDelete,
 }: Props) {
-
+  // Group by field, keep declared order
   const order: AnnotationFieldKey[] = [
     "proposedTitle",
     "background",
@@ -390,13 +409,20 @@ export default function AnnotationPanel({
     list.push(a);
     byField.set(a.fieldKey, list);
   }
+
+  // Badges reflect OPEN (unresolved) threads only — resolving a thread
+  // decrements the floating button + header counts.
   const openThreads = annotations.filter((a) => !a.resolved);
   const openCount = openThreads.length;
 
   return (
     <>
-      {
-}
+      {/* Collapse/expand toggle.
+          On a phone the pill ("Comments" + icon) was too wide and sat on the
+          LEFT, over the field content — it is now a 48px round button pinned to
+          the bottom-RIGHT with the label dropped. From sm up it keeps the
+          labelled pill, where there is room for it. `aria-label` carries the
+          meaning on mobile, where the text is gone. */}
       <button
         type="button"
         onClick={onToggle}
@@ -409,7 +435,7 @@ export default function AnnotationPanel({
         ) : (
           <MessageSquareText className="h-6 w-6" />
         )}
-        {}
+        {/* Icon only on a phone — the label is what made the pill too long. */}
         <span className="hidden text-sm font-semibold sm:inline">
           {open ? "Hide" : "Comments"}
         </span>
@@ -420,7 +446,7 @@ export default function AnnotationPanel({
         )}
       </button>
 
-      {}
+      {/* Panel */}
       {open && (
         <div className="fixed bottom-40 left-4 right-4 z-50 flex h-[70vh] max-h-[560px] w-auto flex-col overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl sm:bottom-24 sm:left-auto sm:right-6 sm:h-[560px] sm:w-[380px]">
           <div className="flex items-center gap-2 border-b bg-amber-600 px-4 py-3 text-white">

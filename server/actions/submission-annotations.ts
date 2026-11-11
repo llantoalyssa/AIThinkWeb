@@ -5,7 +5,22 @@ import { getCurrentUser } from "@/server/actions/auth";
 import { notify } from "@/server/actions/approval-workflow";
 import { createAdminClient } from "@/server/supabase/admin";
 
-
+// ============================================================
+// Submission annotations — Google-Docs-style threaded comments
+// anchored to sections of a submitted TAF.
+//
+// Visibility follows the SAME roadmap as the approval workflow:
+//  - the student (submitter) sees and can reply to all threads,
+//  - the adviser can comment from the start,
+//  - associate_dean / dean / vcrdes can only see & comment once
+//    the TAF has been routed to them (current_approver_role or
+//    fully approved),
+//  - the department can see & comment on ANY submission (it is the
+//    optional approver that may act on any pending step, at any time).
+// Each thread is scoped to one counterparty via `with_role`, so
+// the student has separate annotation threads per approver, and
+// each approver only sees their own.
+// ============================================================
 
 export type AnnotationFieldKey =
   | "proposedTitle"
@@ -43,7 +58,10 @@ export type AnnotationActionResult =
   | { success: true }
   | { success: false; error: string };
 
-
+// ── Routing/participant gate (mirrors submission-chat) ─────────────
+// Returns which annotation threads (`with_role`) the user can access,
+// plus whether they may actually COMMENT (participants only). Group-member
+// students who are NOT the submitter get view-only access (canComment = false).
 async function accessibleRoles(
   submissionId: string,
   userId: string,
@@ -70,7 +88,20 @@ async function accessibleRoles(
     .single();
   const isAdviser = !!group && group.adviser_id === userId;
 
-
+  /**
+   * ARCHIVED GROUP → comments do not exist for this submission: nothing is
+   * returned and nothing can be created, for EVERY role (submitter, adviser,
+   * associate dean, dean, VCRDES, department).
+   *
+   * Enforced here, in the one gate every annotation action calls, because the UI
+   * flag alone is not a guarantee — a stale tab, a cached page or a direct action
+   * call could still insert a comment into a closed group.
+   *
+   * `canComment: false` also blocks replies (replyToAnnotation uses this gate).
+   */
+  // Read the flag with the service role: an approver has no SELECT right on an
+  // archived group, so the session read above can legitimately return no row —
+  // which must not be mistaken for "not archived".
   let archived = (group as { is_active?: boolean } | null)?.is_active === false;
   if (!archived) {
     const admin = createAdminClient();
@@ -93,20 +124,33 @@ async function accessibleRoles(
   const approved = !!sub.fully_approved_at;
 
   if (isStudent) {
+    // The submitter sees all counterparty threads and may comment.
     return { ok: true, roles: Array.from(involved), canComment: true };
   }
   if (isAdviser) {
+    // The adviser participates from the start AND sees every thread
+    // (their own + the routed approvers') so all reviewer comments are
+    // mutually visible within the group.
     return { ok: true, roles: Array.from(involved), canComment: true };
   }
   if (role === "department") {
+    // The DEPARTMENT is the OPTIONAL approver: it may act on any pending step at
+    // any time, so it is a participant in EVERY submission and may comment on
+    // it. Its thread key falls back to an accessible one (the `with_role` column
+    // is CHECK-capped to the four chain roles — see createSubmissionAnnotation),
+    // so its comments land on the student's thread with author_role
+    // 'department' rather than inventing a fifth conversation.
     return { ok: true, roles: Array.from(involved), canComment: true };
   }
   if (["associate_dean", "dean", "vcrdes"].includes(role)) {
     if (involved.has(role) || approved)
+      // Routed approver sees all threads too (mutual visibility of
+      // everyone's comments on the submission), and may comment.
       return { ok: true, roles: Array.from(involved), canComment: true };
     return { ok: false, error: "This TAF has not been routed to you yet." };
   }
 
+  // Not a participant — allow VIEW-ONLY for group-member students.
   if (role === "student") {
     const { data: membership } = await supabase
       .from("student_group_memberships")
@@ -115,6 +159,7 @@ async function accessibleRoles(
       .eq("group_id", sub.group_id)
       .maybeSingle();
     if (membership) {
+      // View all threads tied to the submission, but cannot comment.
       return { ok: true, roles: Array.from(new Set([...involved, ...route, "adviser"])), canComment: false };
     }
   }
@@ -122,6 +167,7 @@ async function accessibleRoles(
   return { ok: false, error: "You are not a participant in this submission." };
 }
 
+// ── Profile helper ────────────────────────────────────────────────
 
 type ProfileRow = {
   id: string;
@@ -138,6 +184,9 @@ function displayName(p: ProfileRow): string {
     .trim() || "User";
 }
 
+// Notify the submitter and the group's adviser when a comment/reply is
+// added, skipping each recipient when they are the author (so nobody gets
+// notified about their own post).
 async function notifyAdviserOfComment(
   submissionId: string,
   authorId: string,
@@ -158,6 +207,7 @@ async function notifyAdviserOfComment(
     const noun = isReply ? "a reply" : "a comment";
     const actorName = authorName || "Someone";
 
+    // Notify the submitter (student) — unless they wrote it themselves.
     if (submitterId && submitterId !== authorId) {
       await notify(
         submitterId,
@@ -167,6 +217,7 @@ async function notifyAdviserOfComment(
       );
     }
 
+    // Notify the group's adviser — unless they wrote it themselves.
     if (groupId) {
       const { data: group } = await supabase
         .from("advisory_groups")
@@ -295,6 +346,8 @@ export async function createSubmissionAnnotation(
   // Ensure the chosen role is actually accessible
   if (!roles.roles.includes(withRole)) withRole = roles.roles[0] || "adviser";
 
+  // The author's display name only decorates the RESPONSE, so it must not sit
+  // on the critical path behind the insert — run both at once.
   const [{ data, error }, { data: profile }] = await Promise.all([
     supabase
       .from("submission_annotations")
@@ -324,6 +377,7 @@ export async function createSubmissionAnnotation(
 
   const authorName = profile ? displayName(profile as ProfileRow) : user.firstName || "User";
 
+  // Notify the adviser (skipped for the adviser's own comment).
   void notifyAdviserOfComment(submissionId, user.id, authorName, false);
 
   return {
@@ -468,6 +522,9 @@ export async function updateAnnotation(
   return { success: true };
 }
 
+// ── Delete an annotation or reply (author only) ────────────────────
+// Deleting a thread root also cascades-deletes its replies (parent_id
+// FK ON DELETE CASCADE).
 
 export async function deleteAnnotation(
   submissionId: string,

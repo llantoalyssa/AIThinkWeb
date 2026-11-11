@@ -1,4 +1,14 @@
 "use client";
+
+// ============================================================
+// StudentStatsDashboard — redesigned student dashboard content.
+// Two columns:
+//   Col 1: line graph (total TAFs per month, month-filter), then
+//          "Your Lowest Similarity" card, then "Your Highest Similarity".
+//   Col 2: "Pinned TAFs" card, then "Most Recent TAFs" card
+//          (title + similarity %) with a "New TAF" button.
+// ============================================================
+
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
@@ -18,12 +28,17 @@ export default function StudentStatsDashboard({
   initialData,
 }: {
   userId: string;
+  /** Dashboard data already fetched on the SERVER (see the page's page.tsx).
+   *  When present the component renders immediately and skips its mount fetch,
+   *  which used to be a whole queued round trip on every dashboard visit. */
   initialData?: StudentDashboardData;
 }) {
   const router = useRouter();
   const [data, setData] = useState<StudentDashboardData | null>(initialData ?? null);
   const [loading, setLoading] = useState(!initialData);
   const [error, setError] = useState<string | null>(null);
+
+  // Month filter for the line chart
   const [month, setMonth] = useState<string>("all");
 
   useEffect(() => {
@@ -66,6 +81,8 @@ export default function StudentStatsDashboard({
       </div>
     );
   }
+
+  // ── Chart data (filtered by selected month) ──
   const chartData =
     month === "all"
       ? data.monthlyCounts
@@ -74,17 +91,19 @@ export default function StudentStatsDashboard({
         );
   const maxCount = Math.max(1, ...chartData.map((d) => d.count));
   const totalTafs = data.monthlyCounts.reduce((a, b) => a + b.count, 0);
-
+  // month YYYY-MM -> label
   const chartLabel = (ym: string) => {
     const [y, m] = ym.split("-");
     const mi = parseInt(m, 10) - 1;
     return `${MONTHS[mi] ?? m} '${y.slice(2)}`;
   };
-
+  // Build an SVG polyline path
   const w = 460;
   const h = 140;
   const pad = 30;
   const n = chartData.length;
+  // How many points to skip between printed x-axis labels (long continuous
+  // series would otherwise overlap).
   const labelEvery = n > 16 ? 4 : n > 10 ? 3 : n > 6 ? 2 : 1;
   const stepX = n > 1 ? (w - pad * 2) / (n - 1) : 0;
   const pt = (i: number) => {
@@ -99,14 +118,14 @@ export default function StudentStatsDashboard({
           .map((p, i) => `${i === 0 ? "M" : "L"}${p}`)
           .join(" ")
       : n === 1
-        ? `M${w / 2} ${pad} L${w / 2} ${pad}`
+        ? `M${w / 2} ${pad} L${w / 2} ${pad}` // single point
         : "";
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-      {}
+      {/* ══ Column 1 ═══════════════════════════════════════ */}
       <div className="space-y-6">
-        {}
+        {/* Your Lowest Similarity */}
         <div className="rounded-2xl border border-green-200 bg-white shadow-sm p-5">
           <div className="flex items-center gap-2 mb-2">
             <TrendingDown className="h-5 w-5 text-green-600" />
@@ -130,7 +149,7 @@ export default function StudentStatsDashboard({
           )}
         </div>
 
-        {}
+        {/* Your Highest Similarity */}
         <div className="rounded-2xl border border-red-200 bg-white shadow-sm p-5">
           <div className="flex items-center gap-2 mb-2">
             <TrendingUp className="h-5 w-5 text-red-600" />
@@ -155,9 +174,9 @@ export default function StudentStatsDashboard({
         </div>
       </div>
 
-      {}
+      {/* ══ Column 2 ═══════════════════════════════════════ */}
       <div className="space-y-6">
-        {}
+        {/* Line graph: total TAFs */}
         <div className="rounded-2xl border border-gray-200 bg-white shadow-sm p-5">
           <div className="flex items-center justify-between mb-4">
             <div>
@@ -187,7 +206,7 @@ export default function StudentStatsDashboard({
           ) : (
             <>
               <svg viewBox={`0 0 ${w} ${h}`} className="w-full">
-                {}
+                {/* horizontal gridlines + y-axis numeric labels */}
                 {[0, 0.5, 1].map((g) => (
                   <g key={g}>
                     <line
@@ -209,8 +228,10 @@ export default function StudentStatsDashboard({
                     </text>
                   </g>
                 ))}
-                {
-}
+                {/* `line` is SVG PATH syntax (M/L …), so it must go on a
+                    <path d=…>. On a <polyline points=…> the browser can't parse
+                    it and nothing is drawn — which is why the connecting line
+                    was missing. */}
                 {line && (
                   <path
                     d={line}
@@ -225,7 +246,7 @@ export default function StudentStatsDashboard({
                   const [x, y] = pt(i);
                   return (
                     <g key={d.month}>
-                      {}
+                      {/* Invisible larger hit area + hover tooltip */}
                       <circle cx={x} cy={y} r="10" fill="transparent">
                         <title>{`${chartLabel(d.month)}: ${d.count} TAF${d.count === 1 ? "" : "s"}`}</title>
                       </circle>
@@ -239,9 +260,9 @@ export default function StudentStatsDashboard({
                   );
                 })}
               </svg>
-              {
-
-}
+              {/* One label slot per point (empty strings keep the spacing so
+                  labels still line up). With a long continuous month series we
+                  only print every 2nd/3rd label so they don't collide. */}
               <div className="flex justify-between mt-1 px-[30px] text-[10px] text-gray-400">
                 {chartData.map((d, i) => (
                   <span key={d.month} className="truncate" title={chartLabel(d.month)}>
@@ -253,7 +274,7 @@ export default function StudentStatsDashboard({
           )}
         </div>
 
-        {}
+        {/* Most Recent TAFs */}
         <div className="rounded-2xl border border-gray-200 bg-white shadow-sm p-5">
           <div className="flex items-center gap-2 mb-3">
             <History className="h-5 w-5 text-[#8B1A1A]" />
@@ -290,7 +311,7 @@ export default function StudentStatsDashboard({
             </ul>
           )}
 
-          {}
+          {/* New TAF button */}
           <button
             type="button"
             onClick={() => router.push(`/dashboard/student/${userId}/taf/new/_`)}

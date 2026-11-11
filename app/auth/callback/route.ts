@@ -12,10 +12,17 @@ export async function GET(request: Request) {
     const supabase = await createClient();
     const { error } = await supabase.auth.exchangeCodeForSession(code);
     if (!error) {
+      // Authenticated user — after exchanging the OAuth code we have their
+      // REAL identity (names, email, avatar) from Google.
       const {
         data: { user },
       } = await supabase.auth.getUser();
       if (user) {
+        // ── Ensure a profiles row exists, filling names/avatar from the
+        //    authenticated user (this is the authoritative source — Google's
+        //    given/family name if available, else the full_name).
+        //    Only fill EMPTY fields so we never clobber something the user
+        //    edited later (e.g. a corrected name or their SR code).
         const meta = (user.user_metadata || {}) as Record<string, unknown>;
         const fullName = (meta.full_name || meta.name || "") as string;
         const given = (meta.given_name as string) || "";
@@ -32,6 +39,11 @@ export async function GET(request: Request) {
           (meta.avatar_url as string) || (meta.picture as string) || null;
         const email = user.email || "";
 
+        // ── Domain gate ──────────────────────────────────────────
+        // Only @g.batstate-u.edu.ph Google accounts may sign in. The `hd`
+        // query param sent by the client is only a Google UI hint, so the
+        // real enforcement happens here: sign the outsider out and bounce
+        // them back to login with a message.
         if (!email.toLowerCase().endsWith(ALLOWED_EMAIL_DOMAIN)) {
           await supabase.auth.signOut();
           return NextResponse.redirect(`${origin}/login?domain=1`);
@@ -44,6 +56,13 @@ export async function GET(request: Request) {
           .maybeSingle();
 
         if (!existing.data) {
+          // No profile yet (e.g. Google sign-in) — create it.
+          //
+          // NULL (not "") for sr_code: profiles.sr_code is UNIQUE, and the
+          // OAuth trigger (migration 039) used to insert '', so the SECOND
+          // Google account failed that insert with a unique violation. The
+          // trigger is fixed in migration 064; this insert has to stay NULL
+          // either way.
           const insertPayload = {
             id: user.id,
             email: email || null,
@@ -59,6 +78,10 @@ export async function GET(request: Request) {
             .from("profiles")
             .insert(insertPayload);
           if (insertError) {
+            // This used to be fire-and-forget: a failed insert left the account
+            // with NO profile, so the role lookup below answered "student" and
+            // the dashboard bounced the user straight back to /login. Log it,
+            // then repair with the service-role client (which RLS cannot block).
             console.error(
               "[auth/callback] profile insert failed for",
               user.id,
@@ -97,6 +120,11 @@ export async function GET(request: Request) {
           }
         }
 
+        // ── Role-based redirect ──────────────────────────────────
+        // maybeSingle (not single): a missing profile must be DISTINGUISHABLE
+        // from "role = student". Assuming student here is what produced a
+        // sign-in loop — the student dashboard then found no profile and sent
+        // the user back to /login with no explanation.
         const adminForRead = createAdminClient();
         const profileClient = adminForRead ?? supabase;
         const { data: profile, error: profileError } = await profileClient

@@ -1,4 +1,17 @@
 'use client'
+
+// ============================================================
+// ApproverNotificationsPage — the notifications page for an approver role
+// (associate dean / dean / vcrdes).
+//
+// The chrome is the DASHBOARD's chrome: same header, same ApproverSidebar with
+// the SAME permission-aware item list. That is not only cosmetic — a granted
+// page item (e.g. "pages.feedback") used to appear on every surface EXCEPT this
+// one, because this page had no nav to put it in. The permission set now
+// arrives WITH the shell, exactly like the dashboard / review / Feedback
+// surfaces, so every surface of a role renders one identical nav.
+// ============================================================
+
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { type CurrentUser } from '@/server/actions/auth'
@@ -44,6 +57,8 @@ export default function ApproverNotificationsPage({
   const [loading, setLoading] = useState(true)
   const [notifs, setNotifs] = useState<ApprovalNotification[]>([])
   const [err, setErr] = useState<string | null>(null)
+  /** Effective permission keys for this account, seeded by the shell — the nav
+   *  uses them to show a GRANTED page item. Empty = today's nav. */
   const [permissions, setPermissions] = useState<string[]>([])
   const [sidebarExpanded, setSidebarExpanded] = useState(true)
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
@@ -51,6 +66,8 @@ export default function ApproverNotificationsPage({
   useEffect(() => {
     let cancelled = false
     async function load() {
+      // ONE bundled call (identity + notifications + grants) instead of two
+      // queued server actions run back-to-back.
       const shell = await getApproverNotificationsShell()
       if (cancelled) return
       if (!shell.success) {
@@ -71,7 +88,14 @@ export default function ApproverNotificationsPage({
     void load()
     return () => { cancelled = true }
   }, [router, role])
+
+  // The SAME permission-aware list every other surface of this role renders, so
+  // a granted page item cannot vanish merely because the user opened
+  // Notifications.
   const navItems = approverNavItemsFor(role, user?.id ?? urlUserId, permissions)
+
+  // A tab item → that dashboard tab; a granted page item → its own route (the
+  // href nav-items gave it, re-pointed at this role).
   function goTo(item: { tab?: string; href?: string }) {
     if (item.href) {
       router.push(item.href)
@@ -81,6 +105,9 @@ export default function ApproverNotificationsPage({
   }
 
   async function openNotification(n: ApprovalNotification) {
+    // Archived group → do not navigate. The TAF is out of the approval queues and
+    // every action on it is refused, so opening it is a dead end; the notice says
+    // why, and the notification stays unread until the group is unarchived.
     if (n.groupArchived) {
       toast.info("This advisory group has been archived", {
         description:
@@ -88,8 +115,25 @@ export default function ApproverNotificationsPage({
       });
       return;
     }
+
+    // Navigate FIRST — never let the (cosmetic) mark-read call swallow the
+    // click.
+    //
+    // Routing rules:
+    //  • a submission id  → that TAF's review page;
+    //  • a group event (someone joined / left) with no submission → the
+    //    advisory-group page, which is where the roster lives. That page only
+    //    exists for the roles that can own groups (VCRDES cannot);
+    //  • anything else    → the TAF Submissions tab.
     const isGroupEvent =
       !n.submissionId && (n.type === "joined_group" || n.type === "left_group");
+
+    // A submission that came from a group the caller OWNS opens inside that
+    // group (so Back returns to the group, not to the TAF Submissions tab).
+    // Every other notification keeps its current destination: the normal
+    // approval-chain notification still goes to TAF Submissions. The TAF also
+    // stays listed there, and opening it FROM that list is unaffected — this
+    // only changes where the notification itself lands.
     let submissionHref = n.submissionId
       ? `${rolePath(role)}/${urlUserId}/submission/${n.submissionId}`
       : null;
@@ -104,9 +148,12 @@ export default function ApproverNotificationsPage({
           submissionHref = `${rolePath(role)}/${urlUserId}/group/${owned.slug}/submission/${n.submissionId}`;
         }
       } catch {
-
+        // Resolution is best-effort: fall back to the TAF Submissions route.
       }
     }
+
+    // Feedback notifications have no submission and no group — send them to the
+    // role's Feedback page. Without this they fell through to the TAF queue.
     const isFeedbackEvent = n.type === "new_feedback";
 
     const href =
@@ -126,13 +173,15 @@ export default function ApproverNotificationsPage({
       submissionId: n.submissionId || undefined,
       groupId: n.groupId || undefined,
     }).catch(() => {
-
+      // cosmetic — never block navigation
     });
-
+    // Tell every mounted useUnreadNotifications badge to decrement now.
     window.dispatchEvent(new Event("aithink-notifications-read"));
 
     router.push(href);
   }
+
+  // Mark a SINGLE unread notification read without navigating away.
   async function markOneRead(n: ApprovalNotification) {
     if (n.readAt) return
     setNotifs((prev) =>
@@ -144,6 +193,8 @@ export default function ApproverNotificationsPage({
     })
     window.dispatchEvent(new Event('aithink-notifications-read'))
   }
+
+  // Mark ALL unread notifications read so the badge drops to zero.
   async function markAllRead() {
     if (!notifs.some((n) => !n.readAt)) return
     setNotifs((prev) =>
@@ -170,7 +221,7 @@ export default function ApproverNotificationsPage({
   return (
     <div className="min-h-screen bg-gray-50">
       <header className="sticky top-0 z-30 flex h-14 items-center gap-3 border-b bg-white px-4 shadow-sm">
-        {}
+        {/* The nav had NO mobile entry point on this page at all. */}
         <button
           onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
           aria-label="Toggle menu"
@@ -182,7 +233,7 @@ export default function ApproverNotificationsPage({
         <UserMenu user={user} userId={urlUserId} routeBase={rolePath(role)} />
       </header>
 
-      {}
+      {/* Mobile drawer */}
       {mobileMenuOpen && (
         <div className="fixed inset-0 z-20 md:hidden">
           <div

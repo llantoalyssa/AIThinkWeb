@@ -1,5 +1,17 @@
 "use client";
 
+// ============================================================
+// Department notifications — client page.
+//
+// Renders the department's OWN shell (same header + same nav list as the
+// dashboard) so the bell, the side nav and the styling stay consistent
+// across the role's pages. Identity and the list arrive as props from the
+// server route — no mount fetches.
+//
+// Department users are not in the approval chain, so a notification has no
+// submission page to open: clicking one marks it read and stays here. The
+// bell's "View all" and the nav item both land on this page.
+// ============================================================
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
@@ -68,12 +80,20 @@ export default function DepartmentNotificationsPage({
     notifsSafePage * NOTIFS_PER_PAGE,
   );
 
+  // THE shared source (components/nav-items.tsx) — identical to the list the
+  // dashboard, audit-trail and profile pages render for this role, including the
+  // permission filtering (the department is not exempt from the permission set).
   const navItems = navItemsFor({
     role: "department",
     userId,
     permissions: initialPermissions,
   });
   const allHref = departmentNotificationsHref(userId);
+
+  // Cosmetic state changes first, the server call second (fire-and-forget) —
+  // an awaited failed call must never swallow the click. Mark by ID so only
+  // THIS notification changes (submissionId would mark every unread one for
+  // that submission, and department notifications may have none at all).
   function markOneRead(n: ApprovalNotification) {
     setNotifs((prev) =>
       prev.map((x) => (x.id === n.id ? { ...x, readAt: new Date().toISOString() } : x)),

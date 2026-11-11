@@ -9,7 +9,7 @@ import TopicAbstractList from '@/components/topic-abstract-list'
 import SidebarCollapseHandle from "@/components/sidebar-collapse-handle";
 import RecentTafs from '@/components/recent-tafs'
 import { useUnreadNotifications } from '@/hooks/use-unread-notifications'
-import NotificationBell from '@/components/notification-bell'
+import StudentNotificationsBell from '@/components/student-notifications-bell'
 import { UserMenu } from '@/components/user-menu'
 import { navItemsFor, type NavItem } from '@/components/nav-items'
 import {
@@ -84,13 +84,7 @@ export default function StudentTafPage({
 
         <h1 className="text-lg font-semibold text-[#333] flex-1">AIThink</h1>
 
-        {/* Same bell as the dashboard: notifications must be reachable from
-            every student surface, not just the landing page. */}
-        <NotificationBell
-          routerPush={(href) => router.push(href)}
-          allHref={`/dashboard/student/${userId}/notifications`}
-          hrefFor={() => `/dashboard/student/${userId}/notifications`}
-        />
+        <StudentNotificationsBell userId={userId} />
         <UserMenu user={currentUser} userId={userId} routeBase="/dashboard/student" />
       </header>
 

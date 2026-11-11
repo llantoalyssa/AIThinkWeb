@@ -11,8 +11,26 @@ import { getMyGrantedPermissions } from "@/server/actions/permissions";
 import { embedText } from "@/server/analysis/similarity";
 import { logAudit } from "@/server/audit";
 
+/**
+ * A page with fewer characters than this has no usable text layer. Kept here as
+ * well as in lib/pdf-ocr.ts because that module is "client-only"; the two MUST
+ * agree, which is why both are 40.
+ */
 const PAGE_TEXT_MIN_CHARS = 40;
 
+/**
+ * Character-level cleanup AFTER layout, so the text that reaches the similarity
+ * pipeline keeps every character the PDF actually contains:
+ *  - typographic LIGATURES (ﬁ ﬂ ﬃ …) become their letters. PDF fonts often store
+ *    "ﬁ" as one glyph, and an embedding that never sees "f"+"i" cannot match a
+ *    query written normally.
+ *  - SOFT HYPHENS and zero-width marks are dropped (invisible, but they split
+ *    words for the tokenizer).
+ *  - a word hyphenated across a printed line break is rejoined, which is how a
+ *    reader would read it; the paragraph break (blank line) is preserved.
+ *  - NBSP / thin spaces become ordinary spaces.
+ * Nothing else is touched — tokenisation and scoring are downstream concerns.
+ */
 function normalizeExtractedText(text: string): string {
   return text
     .replace(/\u00AD/g, "")
@@ -40,6 +58,10 @@ export type PdfPagesResult =
     }
   | { success: false; error: string };
 
+/**
+ * PER-PAGE extraction — what the journal upload needs to decide, page by page,
+ * whether to OCR. `extractPdfText` below is the plain-string view of this.
+ */
 export async function extractPdfPages(fileUrl: string): Promise<PdfPagesResult> {
   const supabase = await createClient();
 
@@ -85,6 +107,10 @@ export async function extractPdfPages(fileUrl: string): Promise<PdfPagesResult> 
         const page = await doc.getPage(i);
         try {
           const viewport = page.getViewport({ scale: 1 });
+          // includeMarkedContent:false → only items that CARRY text. A marked
+          // content item has no `str`, and the old `.map(i => i.str)` silently
+          // pushed `undefined` into the join, which is how characters went
+          // missing around tagged PDFs.
           const content = await page.getTextContent({
             includeMarkedContent: false,
           });
@@ -134,6 +160,8 @@ export async function extractPdfPages(fileUrl: string): Promise<PdfPagesResult> 
 
     const joined = pages.join("\n\n").replace(/\n{3,}/g, "\n\n").trim();
     const totalChars = joined.length;
+    // Per-document summary, so a "this PDF extracted almost nothing" report can
+    // be answered from the server logs without opening the file.
     console.info(
       `[extractPdfText] ${numPages} page(s) → ${totalChars} chars (${(totalChars / Math.max(numPages, 1)).toFixed(0)}/page)`,
     );
@@ -154,6 +182,11 @@ export async function extractPdfPages(fileUrl: string): Promise<PdfPagesResult> 
   }
 }
 
+/**
+ * The whole document as one string — the contract every existing caller uses.
+ * Pages are separated by a blank line so downstream section/paragraph heuristics
+ * still see where a page ended.
+ */
 export async function extractPdfText(fileUrl: string): Promise<string> {
   const result = await extractPdfPages(fileUrl);
   if (!result.success) return "";
@@ -223,6 +256,11 @@ function extractEmbeddingCore(title: string, fullText: string): string {
   return core.length >= 40 ? core : title.trim();
 }
 
+// ── Helper: build an SBERT embedding for a text string ─────
+//
+// Delegates to the SHARED model in server/analysis/similarity.ts. This used to
+// call pipeline() itself, which re-loaded all-MiniLM-L6-v2 on every journal
+// upload — hundreds of MB per call for a model that is already resident.
 async function embedJournalText(text: string): Promise<number[] | null> {
   try {
     return await embedText(text);
@@ -239,6 +277,7 @@ export type JournalView = {
   year: string | null;
   fileUrl: string;
   hasText: boolean;
+  /** Plain text for overlap highlighting next to the PDF. */
   extractedText: string;
 };
 
@@ -290,6 +329,12 @@ export async function getAllJournals(): Promise<
     return { success: false, error: "You must be logged in." };
   }
 
+  // The PAGE PERMISSION is the gate, not the role: `pages.journals` is grantable
+  // (migration 060 lists the adviser and the three approver roles), so hardcoding
+  // "department only" here is what made a granted account open the Journals page
+  // and read "Only department accounts can view journals." The library itself is
+  // read-only for them — `journals.manage` (upload/edit/delete) stays
+  // department-only and is checked by the write actions.
   const granted = await getMyGrantedPermissions();
   if (!granted.includes("pages.journals")) {
     return {
@@ -493,6 +538,9 @@ export async function logJournalExtractCost(input: {
 
   const supabase = await createClient();
 
+  // Priced with the SAME table the TAF pipeline uses, so a journal row and a
+  // TAF row for the same provider cannot disagree. This used to be hardcoded to
+  // DeepSeek's rates and labelled "opencode-go" even when Gemini answered.
   const provider = input.provider ?? resolveAnalysisProvider();
   const model = input.model ?? resolveAnalysisModel();
   const rates = analysisRatePerToken();

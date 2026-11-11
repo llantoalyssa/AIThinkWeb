@@ -6,7 +6,10 @@ import { cookies } from "next/headers";
 import { logAudit } from "@/server/audit";
 import { ALLOWED_EMAIL_DOMAIN, type UserRole, ROLE_DASHBOARD_ROUTES } from "@/lib/constants";
 
-
+// Shared name validation: letters (any script), spaces, hyphen, apostrophe and
+// period. A suffix may additionally contain a comma ("Jr., III"). Reused by
+// both register() and updateProfile() so the stored profile always obeys the
+// same rules.
 const NAME_RE = /^[\p{L} .'-]+$/u;
 const SUFFIX_RE = /^[\p{L} .,'-]+$/u;
 
@@ -93,6 +96,8 @@ export async function login(input: LoginInput): Promise<LoginResult> {
 
   console.log(`User ${data.user.id} logged in with role: ${role}`);
 
+  // Audit trail. The actor is passed EXPLICITLY: signInWithPassword just wrote
+  // the session cookies onto the RESPONSE, so a lookup here would miss them.
   const meta = (data.user.user_metadata ?? {}) as {
     first_name?: string;
     last_name?: string;
@@ -123,6 +128,9 @@ export async function register(input: RegisterInput): Promise<RegisterResult> {
   const role = input.role || "student";
 
   // ── Server-side validation ──────────────────────────────────
+  // Names accept letters (any script), spaces, hyphen, apostrophe and period;
+  // a suffix may also contain a comma. Digits/symbols are rejected so a crafted
+  // request can't store a name that breaks the UI or later export.
   if (!firstName || firstName.length < 2) {
     return { success: false, error: "First name must be at least 2 characters." };
   }
@@ -212,6 +220,9 @@ export async function register(input: RegisterInput): Promise<RegisterResult> {
     return { success: false, error: error.message };
   }
 
+  // Some Supabase flows return a session-less (200) with an empty identity list
+  // when the email is already taken (confirmation-dependent) rather than an
+  // error. Guard so the user never hits a confusing "account created" message.
   if (data?.user?.identities?.length === 0) {
     return {
       success: false,
@@ -219,10 +230,18 @@ export async function register(input: RegisterInput): Promise<RegisterResult> {
     };
   }
 
+  // The profile row is created automatically by the on_auth_user_created
+  // trigger (migration 039), which is SECURITY DEFINER and copies
+  // names/role/sr_code from the user_metadata above. It bypasses RLS so it
+  // works for BOTH email signup and Google OAuth identically. Do NOT add a
+  // client-side profiles insert here — it fails RLS when no session exists
+  // (email confirmation on) and would recreate the very error we fixed.
 
+  // Clear any session set by signUp to prevent auto-login
   await supabase.auth.signOut();
 
-
+  // Audit trail: a self-registration (no session exists — the actor is built
+  // from the signup payload).
   await logAudit({
     action: "account_registered",
     actor: {
@@ -241,6 +260,7 @@ export async function register(input: RegisterInput): Promise<RegisterResult> {
   return { success: true };
 }
 
+// ── Current user (server-side fetch) ────────────────────────────
 
 export type CurrentUser = {
   id: string;
@@ -256,6 +276,18 @@ export type CurrentUser = {
   signatureUrl: string | null;
 };
 
+// ── Request-scoped session memo ─────────────────────────────────
+//
+// getCurrentUser() is called from 120-odd places and costs TWO Supabase round
+// trips (auth.getUser + the profiles select). A single page render routinely
+// calls it 2–4 times — page, role shell, and a child action — so the same two
+// queries were being paid for repeatedly on every navigation.
+//
+// React's cache() memoises for the lifetime of ONE request: it is dead before
+// the next request, so nothing here can ever be stale and there is no
+// invalidation to get wrong. The exported action keeps its async signature
+// because a "use server" module may only export async functions — hence the
+// private const plus the thin wrapper below.
 const loadCurrentUser = cache(async (): Promise<CurrentUser | null> => {
   const supabase = await createClient();
 
@@ -264,6 +296,10 @@ const loadCurrentUser = cache(async (): Promise<CurrentUser | null> => {
     error: authError,
   } = await supabase.auth.getUser();
   if (!user) {
+    // Diagnosability for the "randomly logged out mid-task" reports: this is
+    // the single choke point where a page loses its session, and it used to
+    // fail silently. Log WHY (refresh token rejected vs. no cookie at all) —
+    // cookie NAMES only, never values, so nothing sensitive is written.
     try {
       const jar = await cookies();
       const names = jar.getAll().map((c) => c.name);
@@ -305,6 +341,14 @@ const loadCurrentUser = cache(async (): Promise<CurrentUser | null> => {
   };
 });
 
+/**
+ * The signed-in account, memoised for this request.
+ *
+ * NOTE for actions that CHANGE the current account (rename, signature upload):
+ * a later getCurrentUser() in the SAME request returns the pre-change snapshot.
+ * Re-read through createClient() there, or let the client's refresh start a new
+ * request — the memo never outlives the request.
+ */
 export async function getCurrentUser(): Promise<CurrentUser | null> {
   return loadCurrentUser();
 }
@@ -322,6 +366,8 @@ export type LogoutResult = { success: true } | { success: false; error: string }
 export async function logout(): Promise<LogoutResult> {
   const supabase = await createClient();
 
+  // Log it BEFORE signing out — afterwards there is no session left to
+  // attribute the event to.
   await logAudit({ action: "logout", description: "Signed out." });
 
   const { error } = await supabase.auth.signOut();
@@ -338,6 +384,11 @@ export async function logout(): Promise<LogoutResult> {
 
 export type UpdateAvatarResult = { success: true } | { success: false; error: string };
 
+// ── Update editable profile fields ───────────────────────────────
+// Students/staff can edit their own First Name, Last Name, Middle
+// Initial, and Suffix. SR Code and (GSuite) email are NOT editable
+// here — they are set at account creation and managed by the
+// department office.
 
 export type UpdateProfileResult = { success: true } | { success: false; error: string };
 
@@ -346,6 +397,7 @@ export async function updateProfile(input: {
   lastName?: string;
   middleInitial?: string;
   suffix?: string;
+  /** Only applied when the profile's SR code is currently empty (e.g. Google sign-in). */
   srCode?: string;
 }): Promise<UpdateProfileResult> {
   const user = await getCurrentUser();
@@ -396,6 +448,8 @@ export async function updateProfile(input: {
     updates.suffix = suffix || null;
   }
   if (srCode !== undefined) {
+    // Basic format: digits with optional dash, e.g. 00-00000. The server RPC
+    // only applies it when the profile's current value is empty.
     updates.sr_code = srCode;
   }
 
@@ -405,6 +459,8 @@ export async function updateProfile(input: {
 
   const supabase = await createClient();
 
+  // Use a SECURITY DEFINER RPC so the row is always addressed by the real
+  // auth.uid() and the write is guaranteed (bypasses any RLS UPDATE quirk).
   const { data, error } = await supabase.rpc("update_own_profile_fields", {
     p_first_name: updates.first_name ?? null,
     p_last_name: updates.last_name ?? null,
@@ -428,6 +484,7 @@ export async function updateProfileAvatar(avatarUrl: string): Promise<UpdateAvat
   if (!user) return { success: false, error: "You must be logged in." };
 
   const supabase = await createClient();
+  // SECURITY DEFINER RPC keyed on auth.uid() — guaranteed write.
   const { data, error } = await supabase.rpc("update_own_avatar_url", {
     p_avatar_url: avatarUrl,
   });
@@ -442,6 +499,11 @@ export async function updateProfileAvatar(avatarUrl: string): Promise<UpdateAvat
   return { success: true };
 }
 
+// ── Update digital signature URL ───────────────────────────
+// Affair roles (adviser, associate_dean, dean, vcrdes) upload a digital
+// signature image that will be stamped onto approved TAFs. The client
+// uploads the file to the `signatures` bucket, then persists the public URL
+// here via a SECURITY DEFINER RPC keyed on auth.uid().
 
 export async function updateSignature(signatureUrl: string): Promise<UpdateAvatarResult> {
   const user = await getCurrentUser();
@@ -463,6 +525,9 @@ export async function updateSignature(signatureUrl: string): Promise<UpdateAvata
 }
 
 // ── Change password ──────────────────────────────────────────────
+// Verifies the current password by re-signing in, then sets the new
+// password so only the account owner with the correct current password
+// can change it.
 
 export type ChangePasswordResult = { success: true } | { success: false; error: string };
 
@@ -488,6 +553,9 @@ export async function changePassword(input: {
 
   const supabase = await createClient();
 
+  // Which identity does this account actually sign in with? A Google-created
+  // account has NO password provider, so "change password" can never work there
+  // — it used to fail with a bare generic message that looked like a bug.
   const { data: authNow } = await supabase.auth.getUser();
   const providers = (authNow.user?.app_metadata?.providers as string[] | undefined) ?? [];
   const signInEmail = user.email || authNow.user?.email || "";
@@ -520,6 +588,13 @@ export async function changePassword(input: {
   }
 
   // 2. Set the new password.
+  //
+  // `current_password` is REQUIRED when the Supabase project has "Secure
+  // password change" enabled — without it GoTrue answers
+  // "Current password required" and the change fails even though the caller just
+  // re-authenticated. It is ignored by projects that do not enable the setting,
+  // so sending it is always correct. (`as unknown as` because the client's TS
+  // types do not include the field yet.)
   const { error: updateErr } = await supabase.auth.updateUser({
     password: newPassword,
     current_password: currentPassword,
@@ -527,7 +602,9 @@ export async function changePassword(input: {
 
   if (updateErr) {
     console.error("[auth] Failed to change password:", updateErr);
-
+    // Surface what Supabase actually said (weak password, same-as-old, rate
+    // limit...). A generic "please try again" hid the reason and made a real,
+    // fixable rejection look like a bug in this app.
     const detail = updateErr.message?.trim();
     return {
       success: false,
@@ -551,6 +628,10 @@ export async function changePassword(input: {
 }
 
 // ── Set a new password (password-reset flow) ───────────────────────
+// Called from the /auth/update-password page after the user clicked the
+// recovery link and Supabase exchanged its code for a session. Unlike
+// changePassword there is no current-password check — Supabase treats the
+// recovery session as proof of ownership.
 export async function updatePassword(
   password: string
 ): Promise<{ success: true } | { success: false; error: string }> {

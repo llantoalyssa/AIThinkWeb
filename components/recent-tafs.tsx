@@ -30,10 +30,12 @@ import {
 
 type Props = {
   userId: string;
-
+  /** If set, highlights this TAF ID as "active" */
   activeTafId?: string;
-
+  /** Called after a delete completes so parent can re-fetch if needed */
   onDeleted?: () => void;
+  /** Recents fetched on the SERVER and handed down; when present the component
+   *  renders immediately instead of requesting them on mount. */
   initialEntries?: RecentTAFEntry[];
 };
 
@@ -138,9 +140,9 @@ export default function RecentTafs({ userId, activeTafId, onDeleted, initialEntr
       <p className="text-[11px] font-medium text-gray-400 uppercase tracking-wider mb-2 px-1 shrink-0">
         Recents
       </p>
-      {
-
-}
+      {/* Fills the remaining sidebar height and scrolls only when the list is
+          taller than it. (A fixed max-h here clipped the list — the "break" —
+          and left empty space on tall screens.) */}
       <div className="min-h-0 flex-1 overflow-y-auto space-y-0.5 scrollbar-thin">
         {entries.map((entry) => {
           const isActive = activeTafId === entry.tafId;
@@ -157,19 +159,19 @@ export default function RecentTafs({ userId, activeTafId, onDeleted, initialEntr
               onClick={() => navigate(entry)}
               title={entry.proposedTitle || "Untitled"}
             >
-              {}
+              {/* Pin indicator */}
               {entry.pinned ? (
                 <Pin className="h-3 w-3 shrink-0 text-amber-500" />
               ) : (
                 <FileText className="h-3 w-3 shrink-0 text-gray-400" />
               )}
 
-              {}
+              {/* Title */}
               <span className="flex-1 truncate leading-tight">
                 {entry.proposedTitle || "Untitled"}
               </span>
 
-              {}
+              {/* Status dot */}
               <span
                 className={`shrink-0 h-1.5 w-1.5 rounded-full ${
                   entry.status === "draft"
@@ -184,7 +186,7 @@ export default function RecentTafs({ userId, activeTafId, onDeleted, initialEntr
                 }`}
               />
 
-              {}
+              {/* Triple-dot menu */}
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <button
@@ -247,7 +249,7 @@ export default function RecentTafs({ userId, activeTafId, onDeleted, initialEntr
         })}
       </div>
 
-      {}
+      {/* Delete modal */}
       <ConfirmDeleteModal
         open={deleteTargetId !== null}
         onOpenChange={(open) => {

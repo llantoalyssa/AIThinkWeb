@@ -1,6 +1,24 @@
+// ============================================================
+// Audit trail — server-side logging + reads.
+//
+// Writing is BEST-EFFORT and must never break the action it describes: every
+// insert is wrapped, failures only reach the server log. That also means the
+// app keeps working before migration 051 has been applied.
+//
+// Reads are performed with the CALLER'S session client, so the RLS policy on
+// audit_logs (department/admin SELECT only) is what actually protects the
+// data — the role check here just produces a friendly message.
+// ============================================================
+
 import { createAdminClient } from "@/server/supabase/admin";
 import { createClient } from "@/server/supabase/server";
 import { ACTION_CATEGORY, type AuditAction, type AuditCategory } from "@/lib/audit";
+
+// NOTE: getCurrentUser is imported DYNAMICALLY inside the functions below.
+// server/actions/auth.ts imports logAudit from this module, so a static import
+// of auth here would create a cycle — a dynamic import keeps both sides safe.
+
+/** Who performed the action. */
 export type AuditActor = {
   id?: string | null;
   email?: string | null;
@@ -11,12 +29,19 @@ export type AuditActor = {
 export type LogAuditInput = {
   action: AuditAction | string;
   category?: AuditCategory;
+  /** Human-readable one-liner shown in the Description column. */
   description?: string;
   entityType?: string;
   entityId?: string | null;
+  /** Snapshot of what was affected (survives the entity being deleted). */
   entityLabel?: string | null;
   metadata?: Record<string, unknown>;
-
+  /**
+   * Explicit actor. Pass it when the session isn't readable in this context
+   * (the OAuth callback sets cookies on the RESPONSE, so the request cookies
+   * don't have it yet) or when the caller already resolved the user and a
+   * second lookup would be a wasted round trip.
+   */
   actor?: AuditActor;
 };
 
@@ -28,10 +53,22 @@ function actorName(u: {
   return name || null;
 }
 
+/**
+ * Record one audit event. Never throws — a logging failure must not fail the
+ * user's action (or, worse, roll it back).
+ */
 export async function logAudit(input: LogAuditInput): Promise<void> {
   try {
     let actor = input.actor ?? null;
 
+    /**
+     * Fill in the NAME, not just the id.
+     *
+     * Several call sites pass `actor: { id, email, role }` because they already
+     * resolved the session — which left `actor_name` NULL, so the Audit Trail
+     * showed an event with no person attached ("data is saved but the name is
+     * not"). Resolve the rest here instead of asking every caller to remember.
+     */
     if (!actor || !actor.name) {
       const { getCurrentUser } = await import("@/server/actions/auth");
       const user = await getCurrentUser().catch(() => null);
@@ -45,6 +82,10 @@ export async function logAudit(input: LogAuditInput): Promise<void> {
       }
     }
 
+    /**
+     * Last resort for an explicit actor with no session (the recovery-link
+     * password flow): read the name off the profile row.
+     */
     if (actor && !actor.name && (actor.id || actor.email)) {
       const lookup = createAdminClient();
       if (lookup) {
@@ -73,6 +114,7 @@ export async function logAudit(input: LogAuditInput): Promise<void> {
 
     const admin = createAdminClient();
     if (!admin) {
+      // No service-role key configured — logging is skipped, never fatal.
       console.error("[audit] service role key missing — event not recorded");
       return;
     }
@@ -91,7 +133,8 @@ export async function logAudit(input: LogAuditInput): Promise<void> {
     });
 
     if (error) {
-
+      // 42P01 = table missing (migration 051 not applied yet) — expected until
+      // the migration is pasted; anything else is a real problem.
       console.error(
         `[audit] could not log "${action}":`,
         error.code === "42P01"
@@ -103,6 +146,9 @@ export async function logAudit(input: LogAuditInput): Promise<void> {
     console.error("[audit] logging failed:", err);
   }
 }
+
+// ── Reads (Audit Trail page) ────────────────────────────────────────
+
 export type AuditLogRow = {
   id: string;
   actorEmail: string | null;
@@ -121,7 +167,9 @@ export type AuditLogQuery = {
   perPage?: number;
   action?: string | null;
   category?: string | null;
+  /** Free text over actor name / email / description / entity label. */
   search?: string | null;
+  /** ISO date (inclusive) — filters on created_at. */
   from?: string | null;
   to?: string | null;
 };
@@ -145,7 +193,15 @@ export async function getAuditLogs(
   const user = await getCurrentUser();
   if (!user) return { success: false, error: "You must be logged in." };
   if (user.role !== "department") {
-
+    // PERMISSION-aware, not role-only: `pages.audit` is what migration 057 puts
+    // on the SELECT policy of public.audit_logs, and this guard tests the SAME
+    // key with the SAME reader (override → role default → false), so a caller
+    // can never pass here and be filtered to zero rows by RLS — or vice versa.
+    // The department keeps its access through the role shortcut above, which is
+    // free: `pages.audit` is one of its defaults.
+    //
+    // Imported dynamically because this module is the writer permissions.ts
+    // depends on (logAudit); a static import would close that cycle.
     const { getGrantedPermissions } = await import("@/server/actions/permissions");
     const granted = await getGrantedPermissions(user.id);
     if (!granted.includes("pages.audit")) {
@@ -175,6 +231,7 @@ export async function getAuditLogs(
 
   const search = params.search?.trim();
   if (search) {
+    // Commas and parentheses would break PostgREST's or() syntax.
     const safe = search.replace(/[,()*]/g, " ").trim();
     if (safe) {
       query = query.or(
@@ -218,6 +275,10 @@ export async function getAuditLogs(
   return { success: true, rows, total: count ?? rows.length, page, perPage };
 }
 
+/**
+ * The audit trail's most recent events, used as the page's first payload so
+ * the table ships with the server render (no client fetch on open).
+ */
 export async function getRecentAuditLogs(limit = AUDIT_PER_PAGE) {
   return getAuditLogs({ page: 1, perPage: limit });
 }

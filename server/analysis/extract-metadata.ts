@@ -1,5 +1,20 @@
 "use server";
 
+// ============================================================
+// AI-powered journal metadata extraction (title + authors).
+//
+// PROVIDER: the SAME rule as the TAF analysis pipeline
+// (server/analysis/ai-analysis.ts), not a second, journal-only one:
+//
+//   GEMINI_API_KEY set  → Gemini  (GEMINI_MODEL, default gemini-3.8-flash)
+//   otherwise           → opencode-go / DeepSeek (DEEPSEEK_MODEL)
+//
+// Keeping one resolver is the point: journal extraction used to hardcode
+// DeepSeek, so setting GEMINI_API_KEY switched the analysis pipeline to Gemini
+// while journal uploads kept spending DeepSeek tokens — and the cost log said
+// "opencode-go" regardless. The provider and model the call ACTUALLY used are
+// now returned with the metadata, so the cost row cannot disagree with reality.
+// ============================================================
 
 import {
   geminiModelId,
@@ -22,7 +37,10 @@ export type JournalMetadata = {
 
 const MAX_TEXT_LENGTH = 4_000; // First 4K chars of the document
 
-
+// Reasoning models (opencode-go) spend tokens on reasoning_content BEFORE
+// the JSON answer, and that counts toward max_tokens. Keep a generous cap
+// (same as ai-analysis) so the extracted JSON isn't truncated into an empty
+// / partial response — a low cap is what made authors come back blank.
 const MAX_TOKENS = 16_000;
 
 const SYSTEM_PROMPT =
@@ -92,6 +110,8 @@ Respond with ONLY this JSON:
       prompt,
     });
 
+    // Reasoning models may emit the JSON inside reasoning_content (content =
+    // null) or content (some include both). Prefer `content`.
     const raw = completion.content;
     if (!raw) {
       return { success: false, error: "AI returned empty response." };
@@ -133,7 +153,11 @@ Respond with ONLY this JSON:
   }
 }
 
-
+/**
+ * One completion, two providers. The Gemini branch mirrors
+ * server/analysis/ai-analysis.ts exactly (same endpoint, same JSON mode, same
+ * temperature) so the two AI features cannot drift in behaviour or config.
+ */
 async function runCompletion({
   provider,
   model,

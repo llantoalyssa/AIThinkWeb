@@ -34,21 +34,35 @@ import { toast } from "sonner";
 import { UserMenu } from "@/components/user-menu";
 import SidebarCollapseHandle from "@/components/sidebar-collapse-handle";
 import NotificationBell from "@/components/notification-bell";
+
+// Group names are addressed by slug in the student/adviser group routes.
 function slugify(name: string): string {
   return name
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/(^-|-$)/g, "");
 }
+
+// ── Name validation (matches register + the server action) ───────────
+// Names: letters (any script), spaces, hyphen, apostrophe and period.
+// A suffix may additionally contain a comma ("Jr., III").
 const NAME_DISALLOWED_RE = /[^\p{L} .'-]/gu;
 const SUFFIX_DISALLOWED_RE = /[^\p{L} .,'-]/gu;
 const NAME_ALLOWED_RE = /^[\p{L} .'-]+$/u;
+
+/** Drops characters not allowed in a name, as the user types. */
 function sanitizeName(value: string, allowComma = false): string {
   return value.replace(allowComma ? SUFFIX_DISALLOWED_RE : NAME_DISALLOWED_RE, "");
 }
 
 const NAME_ERROR =
   "Only letters are allowed (spaces, hyphen, apostrophe and period are OK)";
+
+/** TEMPORARILY HIDDEN — approver digital-signature upload.
+ *  The "Digital Signature" card on the profile page (and everything behind it:
+ *  handleSignaturePick, the signatures storage bucket, updateSignature) is left
+ *  fully intact and simply not rendered. Flip this to `true` to bring the card
+ *  back — no other change needed. */
 const SHOW_SIGNATURE_UPLOAD = false;
 
 type NavItem = {
@@ -66,13 +80,19 @@ export type ProfileNavItem = {
   href: string;
   badge?: number;
 };
+
+/**
+ * Role-agnostic profile settings page. Each role's /profile/page.tsx renders
+ * this with its own nav items + route base. Works for student, adviser, dean,
+ * associate-dean, vcrdes, and department.
+ */
 export function ProfileSettingsPage({
   role,
   routeBase,
   navItems,
 }: {
   role: UserRole;
-  routeBase: string;
+  routeBase: string; // http://.../dashboard/<role-hyphen>
   navItems: ProfileNavItem[];
 }) {
   const router = useRouter();
@@ -85,15 +105,30 @@ export function ProfileSettingsPage({
   const [signingOut, setSigningOut] = useState(false);
   const [sidebarExpanded, setSidebarExpanded] = useState(true);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+
+  // avatar state
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
   const [uploadingAvatar, setUploadingAvatar] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // digital signature state (affair roles only)
   const [signatureUrl, setSignatureUrl] = useState<string | null>(null);
   const [uploadingSignature, setUploadingSignature] = useState(false);
   const signatureInputRef = useRef<HTMLInputElement>(null);
+
+  // affair roles can upload a digital signature (stamped onto TAFs)
   const isAffair = ["adviser", "associate_dean", "dean", "vcrdes"].includes(role);
+
+  /**
+   * The approver roles can OWN advisory groups (the adviser owns them through
+   * its group pages instead), so only they ask the bell for the owned-group
+   * map — that keeps this bell's fetch and destinations byte-identical for
+   * every other role.
+   */
   const routesOwnedGroups =
     role === "associate_dean" || role === "dean" || role === "vcrdes";
+
+  // password state
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -101,12 +136,16 @@ export function ProfileSettingsPage({
   const [showCurrentPassword, setShowCurrentPassword] = useState(false);
   const [showNewPassword, setShowNewPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+
+  // editable profile state
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
   const [middleInitial, setMiddleInitial] = useState("");
   const [suffix, setSuffix] = useState("");
   const [srCodeEdit, setSrCodeEdit] = useState("");
   const [savingProfile, setSavingProfile] = useState(false);
+
+  // SR code only applies to students; hide for staff roles.
   const isStudent = role === "student";
   const roleLabel = USER_ROLES[role];
 
@@ -138,6 +177,8 @@ export function ProfileSettingsPage({
       cancelled = true;
     };
   }, [router, role]);
+
+  // outside click for mobile drawer
   useEffect(() => {
     function handleResize() {
       if (window.innerWidth >= 768) setMobileMenuOpen(false);
@@ -196,6 +237,8 @@ export function ProfileSettingsPage({
       if (fileInputRef.current) fileInputRef.current.value = "";
     }
   }
+
+  // ── Upload digital signature (affair roles) ─────────────
   async function handleSignaturePick(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file || !currentUser) return;
@@ -349,7 +392,7 @@ export function ProfileSettingsPage({
 
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col">
-      {}
+      {/* Header */}
       <header className="sticky top-0 z-30 flex h-14 items-center gap-3 border-b bg-white px-4 shadow-sm">
         <button
           onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
@@ -365,8 +408,8 @@ export function ProfileSettingsPage({
         <h1 className="text-lg font-semibold text-[#333] flex-1">
           Profile Settings
         </h1>
-        {
-}
+        {/* Notification badge lives beside the user menu (top-right) rather
+            than as a side-nav item, matching the role dashboards. */}
         <NotificationBell
           withOwnedGroupSlugs={routesOwnedGroups}
           routerPush={(href) => router.push(href)}
@@ -375,6 +418,10 @@ export function ProfileSettingsPage({
             if (!n.submissionId) {
               return `${routeBase}/${urlUserId}/notifications`;
             }
+            // Adviser + student review a TAF inside its advisory group;
+            // approvers use the flat per-role submission route — UNLESS the
+            // submission is in a group this approver OWNS, which opens inside
+            // that group exactly like the notifications page routes it.
             if (role === "adviser" || role === "student") {
               return n.groupName
                 ? `${routeBase}/${urlUserId}/group/${slugify(n.groupName)}/submission/${n.submissionId}`
@@ -389,7 +436,7 @@ export function ProfileSettingsPage({
         <UserMenu user={currentUser} userId={urlUserId} routeBase={routeBase} />
       </header>
 
-      {}
+      {/* Mobile drawer */}
       {mobileMenuOpen && (
         <div className="fixed inset-0 z-20 md:hidden">
           <div
@@ -426,8 +473,8 @@ export function ProfileSettingsPage({
       )}
 
       <div className="flex flex-1">
-        {
-}
+        {/* Desktop sidebar — wrapped so the collapse handle can sit on its edge
+            and the nav keeps full viewport height. */}
         <div className="group/sidebar relative hidden shrink-0 self-start sticky top-14 h-[calc(100vh-3.5rem)] md:block">
         <aside
           className={`flex h-full flex-col border-r bg-white transition-all duration-200 overflow-y-auto ${
@@ -469,7 +516,7 @@ export function ProfileSettingsPage({
 
         <main className="flex-1 overflow-auto">
           <div className="mx-auto w-full px-4 py-6 sm:px-6 lg:px-8">
-            {}
+            {/* ── Profile card ─────────────────────────────────────────── */}
             <div className="rounded-2xl border border-gray-200 bg-white shadow-sm">
               <div className="border-b border-gray-100 bg-gradient-to-r from-[#8B1A1A]/5 to-transparent px-6 py-6 flex items-center gap-4">
                 <div className="relative">
@@ -582,7 +629,7 @@ export function ProfileSettingsPage({
               </div>
             </div>
 
-            {}
+            {/* ── Change password ─────────────────────────────────────── */}
             <div className="mt-6 rounded-2xl border border-gray-200 bg-white shadow-sm p-6">
               <div className="flex items-center gap-2 mb-4">
                 <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-[#8B1A1A]/10">
@@ -704,8 +751,8 @@ export function ProfileSettingsPage({
               </div>
             </div>
 
-            {
-}
+            {/* ── Digital signature card (affair roles) ────────────────
+                Hidden for now — see SHOW_SIGNATURE_UPLOAD above. */}
             {SHOW_SIGNATURE_UPLOAD && isAffair && (
               <div className="mt-6 rounded-2xl border border-gray-200 bg-white shadow-sm p-6">
                 <div className="flex items-center gap-2 mb-4">
@@ -763,7 +810,7 @@ export function ProfileSettingsPage({
               </div>
             )}
 
-            {}
+            {/* ── Sign out ─────────────────────────────────────────────── */}
             <div className="mt-6">
               <button
                 type="button"

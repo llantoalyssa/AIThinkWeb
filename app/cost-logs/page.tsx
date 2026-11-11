@@ -1,3 +1,19 @@
+// ============================================================
+// /cost-logs — Analysis Cost Logs (migration 061: `pages.cost_logs`).
+//
+// SERVER page: identity and the grant are resolved before anything is sent, so
+// an account without the permission never receives the table's markup, and the
+// page opens inside the SAME chrome as the rest of that role (the department's
+// shell, the approver frame for adviser / associate dean / dean / vcrdes).
+//
+// Authorization is three layers, the project's standing rule:
+//   1. this page's gate (a notice, never a redirect loop),
+//   2. getCostLogs() — refuses without the permission,
+//   3. RLS on analysis_cost_logs — the SELECT policy is keyed on
+//      has_permission('pages.cost_logs'), so the rows are unreachable even
+//      through PostgREST directly.
+// ============================================================
+
 import { redirect } from "next/navigation";
 import { ShieldAlert } from "lucide-react";
 

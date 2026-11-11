@@ -1,4 +1,19 @@
-
+// ============================================================
+// /dashboard/adviser/[id]/analytics — READ-ONLY Research Analytics for an
+// adviser the department console granted `analytics.view`.
+//
+// Until this route existed, granting that key to an adviser changed nothing:
+// the adviser's nav had two items and the analytics component was only ever
+// rendered inside the approver dashboards' tabs. It renders the SAME component
+// (no fork), so an adviser's screen is an approver's screen.
+//
+// SCOPE: the queries run on the USER client, so RLS decides what the numbers
+// cover — an adviser sees the fully approved TAFs of the groups they own, not
+// the whole college. That is the honest meaning of "analytics" for this role.
+//
+// A SERVER page: identity, the grant and the payload all resolve before the
+// first paint, so there is no spinner and no client fetch.
+// ============================================================
 
 import { redirect } from "next/navigation";
 

@@ -1,4 +1,11 @@
-
+// ============================================================
+// Student feedback — SERVER entry point.
+//
+// The client page used to fire three queued server actions on mount
+// (identity, the notification badge, the sidebar recents). All three are
+// resolved in parallel HERE and ship with the first render, so opening this
+// page costs zero data round trips.
+// ============================================================
 
 import { redirect } from "next/navigation";
 import { getStudentShell } from "@/server/actions/shell-data";

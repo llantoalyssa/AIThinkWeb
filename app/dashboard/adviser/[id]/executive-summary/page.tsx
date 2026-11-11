@@ -1,4 +1,14 @@
-
+// ============================================================
+// /dashboard/adviser/[id]/executive-summary — the Executive Summary an adviser
+// may be granted (`executive_summary.view`).
+//
+// SCOPE, stated on the page: the dean's copy counts the whole college because RLS
+// lets a dean read every submission. An adviser's copy would silently count only
+// the groups they own, so the banner says so instead of letting a narrower number
+// pass for the college-wide figure.
+//
+// A SERVER page: grant check + payload resolve before the first paint.
+// ============================================================
 
 import { redirect } from "next/navigation";
 

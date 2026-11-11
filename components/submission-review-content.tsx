@@ -64,10 +64,27 @@ type Props = {
   onBack: () => void;
   editable?: boolean;
   trackerClickable?: boolean;
+  /**
+   * Server-supplied annotation threads, handed straight to the AnnotationLayer
+   * below. Passing them skips its mount fetch, so the comment badges are
+   * correct on the FIRST paint of a review page instead of a round trip later.
+   * (The review shell already loads them with the submission.)
+   */
   initialAnnotations?: Annotation[] | null;
-
+  /** Whether THIS viewer may post annotations — resolved with the submission. */
   initialCanComment?: boolean;
+  /**
+   * Whether this viewer gets the comment UI at all (the panel's floating button
+   * and select-text-to-comment). False for the DEPARTMENT: it reviews and
+   * decides, it does not annotate — the thread belongs to the student, the
+   * adviser and the approvers.
+   */
   allowComments?: boolean;
+  /**
+   * Hide the "Export TAF" action. Set for a student opening a submission inside
+   * an ARCHIVED advisory group: the group is read-only, so the content stays
+   * readable but nothing can be exported from it.
+   */
   hideExport?: boolean;
 };
 
@@ -237,6 +254,11 @@ export default function SubmissionReviewContent({
   return (
     <AnnotationLayer
       submissionId={submission.id}
+      /* `submission.groupArchived` is applied HERE, not only at the call sites:
+         an archived advisory group has no comments for any role, and any page
+         that renders this component without remembering the flag would otherwise
+         re-open the composer (the adviser's group submission page did exactly
+         that). */
       enableCommentMode={
         !editable && allowComments && !submission.groupArchived
       }
@@ -254,9 +276,9 @@ export default function SubmissionReviewContent({
       </div>
 
       {}
-      {
-
-}
+      {/* Title + decision buttons: side by side on desktop, stacked on a phone.
+          Squeezed into one row, a long research title left the Approve/Return
+          buttons a few dozen pixels wide. */}
       <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:gap-3">
         <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#8B1A1A]/10 sm:h-12 sm:w-12">
           <FileText className="h-5 w-5 text-[#8B1A1A] sm:h-6 sm:w-6" />
@@ -431,6 +453,10 @@ export default function SubmissionReviewContent({
                     </div>
                   </div>
                   {submission.scoringBreakdown && (
+                    // Pass the stored judgment exactly like the owner's view
+                    // (taf-analysis-results.tsx) does — without it the
+                    // per-match cards cannot be coloured high/low and this
+                    // dialog read differently from the same TAF's own page.
                     <ScoringBreakdownCard
                       breakdown={submission.scoringBreakdown}
                       overallJudgment={
@@ -609,8 +635,10 @@ export default function SubmissionReviewContent({
                           </span>
                         )}
                       </div>
-                      {
-}
+                      {/* Desktop keeps the actions beside the title. On a phone
+                          they sat in a ~90px sliver next to a long title, so
+                          they move to their own full-width row below (rendered
+                          again there, hidden here). */}
                       <div className="hidden shrink-0 items-center gap-2 sm:flex">
                         <JournalViewerButton
                           journalId={match.journalId}
@@ -627,9 +655,9 @@ export default function SubmissionReviewContent({
                         </span>
                       </div>
                     </div>
-                    {
-
-}
+                    {/* Mobile-only action row: viewer gets a real tap target and
+                        the score sits beside it, instead of being crushed
+                        against a three-line title. */}
                     <div className="mt-2 flex items-center justify-between gap-2 pl-10 sm:hidden">
                       <JournalViewerButton
                         journalId={match.journalId}

@@ -1,3 +1,16 @@
+// ============================================================
+// Department → Audit Trail — SERVER page.
+//
+// Paging and filtering live in the URL (?page=&action=&category=&q=&from=&to=),
+// so the table is rendered on the server for the requested slice: no client
+// fetch, no loading spinner, and every view is linkable/refresh-safe.
+//
+// The table itself now lives in components/audit-trail-view.tsx, because the
+// approver roles' /audit-trail routes render the SAME table inside their own
+// chrome (a `pages.audit` grant). This page keeps only what is the
+// department's: the role gate, the trail's route (pagination + filters) and its
+// own shell.
+// ============================================================
 
 import { redirect } from "next/navigation";
 import { ShieldAlert } from "lucide-react";
@@ -29,6 +42,11 @@ export default async function AuditTrailPage({
   }
 
   const { filters, query } = auditSearchFromParams(sp);
+  // The department obeys the permission set like every other role: the nav item
+  // is gated on `pages.audit`, so a hand-typed URL must not open the table
+  // either. A notice (not a redirect) — no loop, and the nav already hides the
+  // item. getAuditLogs is RLS-guarded by the same key, so the data is refused
+  // regardless of this check.
   const permissions = await getGrantedPermissions(user.id);
   const canView = permissions.includes("pages.audit");
   const result = canView ? await getAuditLogs(query) : null;

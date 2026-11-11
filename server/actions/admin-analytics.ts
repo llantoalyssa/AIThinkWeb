@@ -1,5 +1,22 @@
 "use server";
 
+// ============================================================
+// Admin Analytics — the numbers behind the department's console.
+//
+// DEPARTMENT ONLY (role check inside the action, and the page redirects any
+// other role home). It is NOT a permission key: this is the console's own
+// overview, not a page other roles can be granted.
+//
+// WHY THE SERVICE-ROLE CLIENT: "active users" needs `auth.users.last_sign_in_at`,
+// which no RLS policy can expose through PostgREST. The action is read-only and
+// the caller is verified as a department account BEFORE the client is created,
+// so the elevated read never serves another role.
+//
+// Everything is computed from one pass over three small tables:
+//   auth.users            → email, created_at, last_sign_in_at
+//   profiles              → role, name, active flag
+//   group_taf_submissions → status, submitted_at, fully_approved_at, returned_at
+// ============================================================
 
 import { createAdminClient } from "@/server/supabase/admin";
 import { getCurrentUser } from "@/server/actions/auth";
@@ -11,7 +28,14 @@ import type {
   AdminAnalyticsResult,
 } from "@/lib/admin-analytics";
 
-
+/**
+ * Start of the selected range, anchored on PHILIPPINE time (UTC+8).
+ *
+ * The server runs in UTC on Vercel, so `new Date(y, m, d)` would begin "today"
+ * at 08:00 PHT — the office would see this morning's sign-ins and TAFs filed
+ * under yesterday. Manila midnight is 16:00 UTC of the previous day, hence the
+ * -8h offset applied to a UTC-built date.
+ */
 const MANILA_OFFSET_MS = 8 * 60 * 60 * 1000;
 
 function manilaParts(now: Date): { year: number; month: number; day: number } {
@@ -49,7 +73,13 @@ function rangeStart(
   }
 }
 
-
+/**
+ * EXCLUSIVE end of the selected range — only a custom span has one.
+ *
+ * `to` is an inclusive calendar DAY in Philippine time, so the upper bound is
+ * the following midnight. Filtering with `<= to` at midnight would silently drop
+ * everything filed during the last day of the range.
+ */
 function rangeEnd(
   range: AdminAnalyticsRange,
   custom?: CustomDateRange | null,

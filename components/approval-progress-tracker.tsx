@@ -1,4 +1,12 @@
 "use client";
+
+// ============================================================
+// ApprovalProgressTracker — horizontal chain showing the TAF's
+// approval flow: Student → Adviser → Associate Dean → Dean → VCRDES.
+// Decided steps are clickable and open a dialog showing the
+// decision note/feedback (approval note or return reason).
+// ============================================================
+
 import { useState } from "react";
 import type { ApproverStepInfo } from "@/server/actions/group-submissions";
 import {
@@ -12,12 +20,14 @@ import {
 
 type Props = {
   steps: ApproverStepInfo[];
-
+  /** Currently routed-to role, or null when with the student. */
   currentRole: string | null;
-
+  /** True once the VCRDES has approved (final state). */
   fullyApproved: boolean;
-
+  /** Optional: submission status for extra context. */
   status?: string;
+  /** Whether decided steps are clickable (open the note dialog).
+   *  Approvers see the tracker read-only, so pass false for them. */
   clickable?: boolean;
 };
 
@@ -29,6 +39,10 @@ export default function ApprovalProgressTracker({
   clickable = true,
 }: Props) {
   const [selected, setSelected] = useState<ApproverStepInfo | null>(null);
+
+  // Figure out the last decided step index (for phase coloring).
+  // Only 'approved'/'rejected' count as decided — the columns default
+  // to 'pending' which must NOT be treated as a decision.
   const isDecided = (s: ApproverStepInfo | null | undefined) =>
     !!s && (s.status === "approved" || s.status === "rejected");
 
@@ -39,7 +53,7 @@ export default function ApprovalProgressTracker({
 
   function phaseFor(idx: number): "past" | "current" | "future" {
     const step = steps[idx];
-    if (step.status === "rejected") return "past";
+    if (step.status === "rejected") return "past"; // returned — show red
     if (fullyApproved) return "past";
     if (step.status === "approved") return "past";
     if (isDecided(step)) return "past";
@@ -56,31 +70,48 @@ export default function ApprovalProgressTracker({
       icon: <User className="h-4 w-4" />,
     })),
   ];
+
+  // Map phase to chain indexes: student is index 0, approvers are 1..4
   function chainPhaseFor(chainIdx: number): "past" | "current" | "future" {
     if (chainIdx === 0) {
-
+      // Student step is always "past" once submitted, "current" if returned
       return status === "revisions_needed" ? "current" : "past";
     }
     return phaseFor(chainIdx - 1);
   }
 
+  /**
+   * The student's own step. It is DONE the moment the TAF is submitted — the
+   * tracker used to print it as a gray "Pending" node even on a fully approved
+   * TAF, next to four green approver nodes, which read as if the student had
+   * not filed the paper at all.
+   *
+   *   submitted / routed / approved → green, "Submitted"
+   *   revisions_needed              → red, "Returned"
+   */
+  const studentReturned = status === "revisions_needed";
+
   return (
     <>
-      {
-
-}
+      {/* py-2 is not decorative: this box scrolls horizontally, and a scroll
+          container also clips vertically — the current step's ring-2 was cut off
+          at the top and bottom of the circles. Padding gives the ring room. */}
       <div className="w-full overflow-x-auto px-1 py-2">
         <div className="flex items-center justify-center min-w-max">
           {chain.map((step, idx) => {
             const phase = chainPhaseFor(idx);
             const approverStep = idx > 0 ? steps[idx - 1] : null;
             const hasNote = !!approverStep?.note;
-            const returned = approverStep?.status === "rejected";
-            const decided = isDecided(approverStep);
+            const isStudentNode = idx === 0;
+            // A submitted TAF IS the student's completed step.
+            const returned = isStudentNode
+              ? studentReturned
+              : approverStep?.status === "rejected";
+            const decided = isStudentNode ? true : isDecided(approverStep);
 
             return (
               <div key={step.key} className="flex items-center">
-                {}
+                {/* Connector line */}
                 {idx > 0 && (
                   <div
                     className={`h-0.5 w-8 sm:w-14 ${
@@ -95,8 +126,16 @@ export default function ApprovalProgressTracker({
                   <button
                     type="button"
                     onClick={() => clickable && approverStep && setSelected(approverStep)}
-                    disabled={!decided}
-                    title={decided ? `View ${step.label} decision` : step.label}
+                    disabled={!approverStep}
+                    title={
+                      approverStep
+                        ? `View ${step.label} decision`
+                        : isStudentNode
+                          ? studentReturned
+                            ? "Returned to the student"
+                            : "Submitted by the student"
+                          : step.label
+                    }
                     className={`flex h-12 w-12 items-center justify-center rounded-full transition-all ${
                       decided
                         ? returned
@@ -105,7 +144,7 @@ export default function ApprovalProgressTracker({
                         : phase === "current"
                           ? "bg-[#8B1A1A]/10 text-[#8B1A1A] ring-2 ring-[#8B1A1A]/30"
                           : "bg-gray-100 text-gray-400"
-                    } ${clickable && decided ? "cursor-pointer" : "cursor-default"}`}
+                    } ${clickable && approverStep && decided ? "cursor-pointer" : "cursor-default"}`}
                   >
                     {decided ? (
                       returned ? (
@@ -132,7 +171,7 @@ export default function ApprovalProgressTracker({
                   >
                     {step.label}
                   </span>
-                  {}
+                  {/* Status badge */}
                   <span
                     className={`mt-0.5 inline-flex items-center rounded-full border px-1.5 py-px text-[9px] font-semibold uppercase tracking-wide ${
                       decided
@@ -147,7 +186,9 @@ export default function ApprovalProgressTracker({
                     {decided
                       ? returned
                         ? "Returned"
-                        : "Approved"
+                        : isStudentNode
+                          ? "Submitted"
+                          : "Approved"
                       : phase === "current"
                         ? "In Progress"
                         : "Pending"}
@@ -157,8 +198,8 @@ export default function ApprovalProgressTracker({
                       <FileText className="h-2.5 w-2.5" /> note
                     </span>
                   )}
-                  {
-}
+                  {/* A stand-in decided this step: the department (which has no
+                      level in the chain) or an owner acting on the entry step. */}
                   {approverStep?.standIn && (
                     <span className="mt-0.5 inline-flex items-center rounded-full border border-amber-200 bg-amber-50 px-1.5 py-px text-[9px] font-semibold uppercase tracking-wide text-amber-600">
                       Stand-in
@@ -171,7 +212,7 @@ export default function ApprovalProgressTracker({
         </div>
       </div>
 
-      {}
+      {/* ── Decision note dialog ──────────────────────────── */}
       {selected && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div
@@ -195,8 +236,8 @@ export default function ApprovalProgressTracker({
                 {new Date(selected.decidedAt).toLocaleString()}
               </p>
             )}
-            {
-}
+            {/* WHO decided this step — the audit trail names the account, not
+                just the role, because a stand-in may have acted in its place. */}
             {selected.actorName && (
               <p className="text-xs text-gray-500 mb-3">
                 Decided by{" "}

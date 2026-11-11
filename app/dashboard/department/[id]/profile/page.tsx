@@ -1,4 +1,14 @@
-
+// ============================================================
+// Department → Profile — SERVER entry point.
+//
+// Identity and the account's EFFECTIVE permission set are resolved HERE, so the
+// client half renders the filtered nav from the first paint: the department
+// obeys the same permission set as every other role (see navItemsFor), and
+// rendering the nav before the grants arrive would flash every item first.
+//
+// The guards match the other department routes: the ROLE decides, not the URL
+// id, and the id the nav links are built from is the CALLER'S own.
+// ============================================================
 
 import { redirect } from "next/navigation";
 

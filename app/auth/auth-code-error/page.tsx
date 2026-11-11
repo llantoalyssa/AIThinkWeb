@@ -1,3 +1,12 @@
+// ============================================================
+// /auth/auth-code-error — where the OAuth callback sends a user when the code
+// exchange fails.
+//
+// This route did not exist: the callback redirected here on failure and the user
+// got a 404, which reads exactly like "Google sign-in is broken" with no clue
+// what happened. It is a plain server page — no auth required, no data.
+// ============================================================
+
 import Link from "next/link";
 
 export default function AuthCodeErrorPage() {

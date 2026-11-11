@@ -1,4 +1,22 @@
 'use client'
+
+// ============================================================
+// SupervisorAdvisoryGroups — the "Advisory Group" tab for the roles that own
+// groups (associate dean, dean, department).
+//
+// This is a CLONE of the adviser dashboard's group page: the same welcome
+// banner, the same three quick-stat cards, the same section header + filter,
+// the same empty state, and — most importantly — cards built from the same
+// shadcn <Card> structure with the same classes (left accent border, "Created"
+// line, description, "Click to view group details", click-to-copy code chip).
+//
+// The ONLY additions are the two badges on each card: joined-student count and
+// pending-decision count. Everything else is deliberately identical, so the
+// three roles see one design.
+//
+// VCRDES never sees this: it is not in GROUP_OWNER_ROLES.
+// ============================================================
+
 import { useCallback, useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { toast } from 'sonner'
@@ -34,7 +52,7 @@ import {
   type AdvisoryGroup,
   type GroupStudent,
 } from '@/server/actions/advisory-groups'
-
+// Single bundled action — one round trip instead of four on mount.
 import { getSupervisorGroupsData } from '@/server/actions/supervisor-groups'
 import {
   AlertTriangle,
@@ -53,10 +71,24 @@ import {
 } from 'lucide-react'
 
 type Props = {
+  /**
+   * Every role that may OWN an advisory group (see GROUP_OWNER_ROLES in
+   * lib/roles.ts). The department owns groups too — it is the CICS office that
+   * supervises capstone students — so it renders this same component from its
+   * own `?section=groups` surface. VCRDES is deliberately not here.
+   */
   role: 'associate_dean' | 'dean' | 'department'
   userId: string
+  /**
+   * Same number the dashboard's side-nav badge shows.
+   *
+   * OPTIONAL: the approver roles pass the count their "TAF Submissions" badge
+   * uses. The department has no such badge, so it omits this and the card falls
+   * back to the pending TAFs across this role's OWN groups — the per-group
+   * numbers the very same fetch below already returns.
+   */
   pendingCount?: number
-
+  /** Shown in the welcome banner, matching the adviser dashboard. */
   userName?: string
 }
 
@@ -64,29 +96,36 @@ export default function SupervisorAdvisoryGroups({ role, userId, pendingCount, u
   const router = useRouter()
   const [groups, setGroups] = useState<AdvisoryGroup[]>([])
   const [totalStudents, setTotalStudents] = useState<number | null>(null)
-
+  // Per-group joined-student counts, keyed by group id (one query for all).
   const [memberCounts, setMemberCounts] = useState<Record<string, number>>({})
-
+  // Per-group pending-TAF counts (what the card badge shows).
   const [pendingByGroup, setPendingByGroup] = useState<Record<string, number>>({})
   const [loading, setLoading] = useState(true)
   const [groupFilter, setGroupFilter] = useState<'active' | 'archived'>('active')
-
+  /** Search + creation-year filters, applied to whichever tab is open. */
   const [groupQuery, setGroupQuery] = useState('')
   const [groupYear, setGroupYear] = useState('all')
+
+  // create dialog
   const [createDialogOpen, setCreateDialogOpen] = useState(false)
   const [newGroupName, setNewGroupName] = useState('')
   const [newGroupDescription, setNewGroupDescription] = useState('')
   const [creatingGroup, setCreatingGroup] = useState(false)
   const [createError, setCreateError] = useState<string | null>(null)
+
+  // per-group transient state
   const [roster, setRoster] = useState<Record<string, GroupStudent[]>>({})
   const [busy, setBusy] = useState<string | null>(null)
   const [deletingGroupId, setDeletingGroupId] = useState<string | null>(null)
-
+  // Card whose group is being opened (shows a spinner while the page loads).
   const [navigatingId, setNavigatingId] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
     async function load() {
+      // ONE round trip. The four queries still run in parallel, but server-side
+      // inside the action — the browser waits for a single request now, which is
+      // what makes opening this tab feel fast.
       const { groups: list, students, members, pending: pendingGroups } =
         await getSupervisorGroupsData()
       if (cancelled) return
@@ -104,13 +143,15 @@ export default function SupervisorAdvisoryGroups({ role, userId, pendingCount, u
   }, [])
 
   const refresh = useCallback(async () => {
-
+    // Same single round trip as the initial load.
     const { groups: list, members, pending: pendingGroups } = await getSupervisorGroupsData()
     if (list.success) setGroups(list.data)
     else toast.error(list.error)
     if (members.success) setMemberCounts(members.counts)
     if (pendingGroups.success) setPendingByGroup(pendingGroups.counts)
   }, [])
+
+  /** Creation year of a group, in Philippine time ("" when unknown). */
   const groupYearOf = (createdAt: string | null | undefined): string => {
     if (!createdAt) return ''
     const date = new Date(createdAt)
@@ -123,6 +164,8 @@ export default function SupervisorAdvisoryGroups({ role, userId, pendingCount, u
   const tabGroups = groups.filter((g) =>
     groupFilter === 'active' ? g.isActive : !g.isActive,
   )
+
+  /** Years present in THIS tab, newest first. */
   const groupYears = Array.from(
     new Set(tabGroups.map((g) => groupYearOf(g.createdAt)).filter(Boolean)),
   ).sort((a, b) => Number(b) - Number(a))
@@ -136,12 +179,20 @@ export default function SupervisorAdvisoryGroups({ role, userId, pendingCount, u
       (g.description ?? '').toLowerCase().includes(q)
     )
   })
+
+  // The "Pending TAFs" stat card. Callers that know the dashboard's pending
+  // count pass it; otherwise the per-group pending numbers (already fetched in
+  // the same round trip) are summed, so the card is never a misleading 0.
   const pendingTotal =
     pendingCount ?? Object.values(pendingByGroup).reduce((sum, n) => sum + n, 0)
+
+  /** Clicking a card opens the same detail screen the adviser uses. */
   const groupHref = (group: AdvisoryGroup) =>
     `${rolePath(role)}/${userId}/groups/${groupSlug(group.name)}`
 
   function navigateToGroup(group: AdvisoryGroup) {
+    // Show a spinner on THIS card so the click has immediate feedback, and
+    // clear it if navigation somehow doesn't happen.
     setNavigatingId(group.id)
     window.setTimeout(() => setNavigatingId(null), 8000)
     router.push(groupHref(group))
@@ -247,8 +298,10 @@ export default function SupervisorAdvisoryGroups({ role, userId, pendingCount, u
   }
 
   return (
+    // Same content width as the adviser dashboard's inner wrapper, so the two
+    // pages line up instead of one being wider than the other.
     <div className="mx-auto mb-6 max-w-6xl">
-      {}
+      {/* Welcome banner — identical to the adviser dashboard's */}
       <div className="mb-6 flex flex-col gap-4 sm:mb-8 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-xl font-bold text-[#333] sm:text-2xl">
@@ -305,8 +358,8 @@ export default function SupervisorAdvisoryGroups({ role, userId, pendingCount, u
                   rows={2}
                   maxLength={200}
                 />
-                {
-}
+                {/* A group description is a one-or-two-line label shown on a
+                    card, not an abstract — cap it and show the budget. */}
                 <p className="text-right text-[11px] text-gray-400">
                   {newGroupDescription.length}/200
                 </p>
@@ -337,7 +390,7 @@ export default function SupervisorAdvisoryGroups({ role, userId, pendingCount, u
         </Dialog>
       </div>
 
-      {}
+      {/* Quick Stats — same three cards, same classes */}
       <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-3">
         <Card>
           <CardHeader className="flex flex-row items-center gap-3 pb-2">
@@ -378,14 +431,14 @@ export default function SupervisorAdvisoryGroups({ role, userId, pendingCount, u
         </Card>
       </div>
 
-      {}
+      {/* Advisory Groups Grid */}
       <div className="mb-6">
         <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
           <h2 className="flex items-center gap-2 text-lg font-semibold text-[#333]">
             <FolderOpen className="h-5 w-5 text-[#8B1A1A]" />
             My Advisory Groups
           </h2>
-          {}
+          {/* Active / Archived filter — default is Active */}
           <div className="flex rounded-lg border border-gray-200 bg-gray-50 p-0.5">
             <button
               onClick={() => setGroupFilter('active')}
@@ -410,8 +463,8 @@ export default function SupervisorAdvisoryGroups({ role, userId, pendingCount, u
           </div>
         </div>
 
-        {
-}
+        {/* Search + creation year — applied to whichever tab is open, so the
+            office can find "the 2024 group" without scrolling the grid. */}
         <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center">
           <div className="relative flex-1">
             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
@@ -476,14 +529,14 @@ export default function SupervisorAdvisoryGroups({ role, userId, pendingCount, u
                     : 'border-l-4 border-l-gray-300 opacity-90'
                 }`}
                 onClick={() => navigateToGroup(group)}
-
+                // Warm the route so the click is fast instead of a cold load.
                 onMouseEnter={() => router.prefetch(groupHref(group))}
               >
                 <CardHeader className="pb-3">
                   <div className="flex items-start justify-between">
                     <CardTitle className="line-clamp-1 text-base font-semibold text-[#333]">
                       {group.name}
-                      {}
+                      {/* Joined students in THIS group: count, then the person icon. */}
                       <span
                         className="ml-2 inline-flex items-center gap-1 rounded-full bg-blue-50 px-2 py-0.5 align-middle text-[10px] font-semibold text-blue-700"
                         title="Students who joined this group"
@@ -491,7 +544,7 @@ export default function SupervisorAdvisoryGroups({ role, userId, pendingCount, u
                         {memberCounts[group.id] ?? 0}
                         <UserRound className="h-3 w-3" />
                       </span>
-                      {}
+                      {/* Pending TAFs in THIS group. */}
                       {(pendingByGroup[group.id] ?? 0) > 0 && (
                         <span
                           className="ml-2 inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 align-middle text-[10px] font-semibold text-amber-700"
@@ -629,12 +682,15 @@ export default function SupervisorAdvisoryGroups({ role, userId, pendingCount, u
         )}
       </div>
 
-      {}
+      {/* Delete Confirmation Dialog */}
       <Dialog
         open={!!deletingGroupId}
         onOpenChange={(open) => {
           if (!open) {
             setDeletingGroupId(null)
+            // A dialog closed after a FAILED action used to leave Radix's
+            // pointer/scroll lock on <body>, freezing every card until a manual
+            // reload. Release it explicitly on every close.
             if (typeof document !== 'undefined') {
               document.body.style.pointerEvents = ''
             }

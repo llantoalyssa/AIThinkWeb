@@ -1,4 +1,21 @@
 "use client";
+
+// ============================================================
+// SidebarCollapseHandle — the little arrow on the RIGHT EDGE of the side nav.
+//
+// It sits vertically centred on the nav's inner edge and is revealed when the
+// pointer is over the nav (the wrapper carries `group/sidebar`), so it never
+// competes with the nav items for attention but is exactly where the eye goes
+// when you want to widen or narrow the list.
+//
+// DESKTOP ONLY (`hidden md:flex`): phones have no persistent sidebar — they use
+// the hamburger drawer — so a handle there would be a dead control. The header
+// toggle stays for keyboard users, which is why this one is purely additive.
+//
+// The aria-label/aria-expanded pair is what makes it meaningful to a screen
+// reader; without them it is an unlabelled circle.
+// ============================================================
+
 import { ChevronLeft, ChevronRight } from "lucide-react";
 
 export default function SidebarCollapseHandle({

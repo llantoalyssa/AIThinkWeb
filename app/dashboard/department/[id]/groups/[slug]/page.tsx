@@ -1,4 +1,17 @@
-
+// ============================================================
+// Department advisory-group detail.
+//
+// Same screen an adviser gets — the shared group-detail client with basePath
+// pointed at the department routes, so every link, the sidebar and the back
+// button stay inside this dashboard. It is the exact shape of the associate
+// dean's …/groups/[slug] route.
+//
+// ONE department-specific difference: where Back goes. The approver roles
+// return to ?tab=groups on their dashboard; the department's group list is a
+// SECTION of its own console (?section=groups), so backHref is passed
+// explicitly instead of letting the client guess a tab URL this role does not
+// have.
+// ============================================================
 
 import { redirect } from "next/navigation";
 import { getAdviserGroupData } from "@/server/actions/adviser-shell";

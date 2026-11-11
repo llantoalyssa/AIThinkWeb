@@ -1,4 +1,24 @@
 'use client'
+
+// ============================================================
+// DepartmentSubmissions — the department's TAF Submissions list.
+//
+// The department is the OPTIONAL approver: it has no step of its own in the
+// approval chain, so it may act on ANY pending step of ANY TAF (see
+// getPendingApprovals / approveSubmission). This panel is the surface that
+// makes that capability reachable — without it the API says yes and there is
+// nothing to click.
+//
+// Two views, both from server actions the department is already allowed to
+// call:
+//   • Pending  — getPendingApprovals(): every submission still in flight
+//                (the department branch of that action is unfiltered by step).
+//   • Approved TAFs are NOT here: they have their own page and permission.
+//
+// Conventions mirror the department console's own tables (Users / table
+// pagination) and the approver TAF lists (row styling, status chips).
+// ============================================================
+
 import { useEffect, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import {
@@ -7,7 +27,11 @@ import {
 } from '@/server/actions/approval-workflow'
 import TablePagination from '@/components/table-pagination'
 import { Loader2, Inbox, ChevronRight } from 'lucide-react'
+
+// Rows per page for this table (same client-side paging as the Users table).
 const SUBMISSIONS_PER_PAGE = 10
+
+
 const STATUS_STYLES: Record<string, string> = {
   pending: 'bg-amber-50 text-amber-700 border-amber-200',
   under_review: 'bg-blue-50 text-blue-700 border-blue-200',
@@ -21,6 +45,8 @@ const STATUS_LABELS: Record<string, string> = {
   revisions_needed: 'Revisions Needed',
   approved: 'Approved',
 }
+
+/** The CHAIN STEP a TAF currently sits at (never the viewer's own role). */
 const STEP_LABELS: Record<string, string> = {
   adviser: 'Adviser',
   associate_dean: 'Associate Dean',
@@ -38,11 +64,18 @@ export default function DepartmentSubmissions({
   const [pending, setPending] = useState<ApprovalListItem[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  // 1-based page. Kept unclamped here and clamped on read (below) so nothing
+  // ever sets state from inside an effect, and the view switch resets it in
+  // its own click handler instead.
   const [page, setPage] = useState(1)
 
   useEffect(() => {
     let cancelled = false
     async function load() {
+      // ONE queue: this panel is the worklist (what still needs a decision).
+      // Fully approved TAFs have their own page, and folding that fetch in here
+      // meant a missing `taf.approved.view` grant surfaced as an ERROR over the
+      // pending list — the queue looked empty instead of merely unpermitted.
       const pendingResult = await getPendingApprovals()
       if (cancelled) return
 
@@ -55,6 +88,8 @@ export default function DepartmentSubmissions({
       cancelled = true
     }
   }, [])
+
+  // ── Paging (derived, never stored) ─────────────────────────
   const rows = pending
   const totalPages = Math.max(1, Math.ceil(rows.length / SUBMISSIONS_PER_PAGE))
   const safePage = Math.min(page, totalPages)
@@ -66,6 +101,8 @@ export default function DepartmentSubmissions({
       ),
     [rows, safePage],
   )
+
+  /** Where a row opens: the department's own submission review route. */
   function submissionHref(id: string): string {
     return `/dashboard/department/${departmentId}/submission/${id}`
   }
@@ -84,8 +121,8 @@ export default function DepartmentSubmissions({
         </p>
       </div>
 
-      {
-}
+      {/* No Pending/Approved switcher: this panel is the worklist. The approved
+          records live on the Approved TAF page (their own permission). */}
       <div className="mb-4 inline-flex items-center gap-2 rounded-lg border bg-white px-3 py-1.5 text-sm">
         <Inbox className="h-4 w-4 text-[#8B1A1A]" />
         <span className="font-medium text-[#8B1A1A]">Pending</span>
@@ -110,9 +147,9 @@ export default function DepartmentSubmissions({
         </div>
       ) : (
         <>
-        {
-
-}
+        {/* Phones: one card per TAF. A six-column table at 390px is a
+            horizontal scroll with the status off-screen — the thing you most
+            need to see. md+ keeps the table. */}
         <div className="space-y-2 md:hidden">
           {pagedRows.map((row) => {
             const step = row.currentApproverRole
@@ -189,6 +226,8 @@ export default function DepartmentSubmissions({
                   <tr
                     key={row.id}
                     onClick={() => router.push(submissionHref(row.id))}
+                    // Warm the review route as soon as the pointer is over the
+                    // row, so opening a TAF is not a cold navigation.
                     onMouseEnter={() => router.prefetch(submissionHref(row.id))}
                     className="hover:bg-gray-50/50 transition-colors cursor-pointer"
                   >

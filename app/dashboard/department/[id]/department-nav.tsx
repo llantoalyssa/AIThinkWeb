@@ -1,4 +1,25 @@
-
+// ============================================================
+// Shared department nav list.
+//
+// THE ORDER IS THE CONSOLE'S WORKFLOW, top to bottom:
+//
+//   Admin Analytics      the numbers first — what the office is responsible for
+//   Research Analytics   college-wide research output
+//   Executive Summary    the dean-style timeline report
+//   Users                account management
+//   Journals             the reference library
+//   TAF Submissions      the approval queue (department is the optional approver)
+//   Advisory Group       the groups the office owns
+//   Approved TAF         the finished record
+//   Cost Logs            AI / SerpAPI spend
+//   Audit Trail          who did what
+//   Feedback             the inbox
+//
+// Section items carry `?section=` so their URL fully describes the view (arriving
+// from Audit Trail then opens THAT section rather than falling back to Users);
+// routed pages carry a real href. The department dashboard and every routed
+// department page render this SAME list, so the side nav cannot disagree.
+// ============================================================
 
 import {
   Activity,

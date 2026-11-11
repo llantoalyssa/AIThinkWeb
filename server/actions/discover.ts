@@ -1,5 +1,13 @@
 "use server";
 
+// ============================================================
+// Public /discover overview — TAFs submitted to the approvers
+// (pending/under_review) or fully approved.
+// Calls the SECURITY DEFINER function discover_public_tafs()
+// (migration 045), which bypasses RLS for anonymous visitors and
+// returns already-masked rows, so no sensitive name ever hits the
+// client. Works logged-out via the anon PostgREST role.
+// ============================================================
 
 import { createClient } from "@/server/supabase/server";
 
@@ -12,6 +20,7 @@ export type DiscoverTaf = {
   date: string;
   status: string;
   combinedScore: number;
+  /** Analysis version that was actually submitted (the low-similarity one). */
   version: number | null;
 };
 
@@ -59,6 +68,12 @@ export async function getDiscoverOverview(): Promise<DiscoverResult> {
           ? null
           : Number(r.version_number),
     }));
+
+  // Newest first. The page paginates 9 cards at a time, so the order has to be
+  // decided HERE — sorting the visible page in the browser would only reorder
+  // whatever slice the RPC happened to return.
+  // Cards with no (or unparseable) date go last; ties break on title so the
+  // order is stable between requests.
   const timestamp = (iso: string): number => {
     const time = Date.parse(iso);
     return Number.isNaN(time) ? -Infinity : time;

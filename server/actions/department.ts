@@ -19,7 +19,9 @@ export type DepartmentUser = {
   role: UserRole;
   isActive: boolean;
   assignedAdviser: string | null; // Adviser name if student and in a group
+  /** When the account was created (profiles.created_at) — drives the year filter. */
   registeredAt: string | null;
+  /** Profile picture, when the account has uploaded one. */
   avatarUrl: string | null;
 };
 
@@ -77,7 +79,9 @@ export async function getAllUsers(): Promise<
   if (user.role !== "department") {
     return { success: false, error: "Only department accounts can view all users." };
   }
-  const supabase = await createClient();  
+
+  const supabase = await createClient();
+
   // 1. Fetch all profiles (email now stored directly in profiles)
   const { data: profiles, error: profilesError } = await supabase
     .from("profiles")
@@ -205,6 +209,10 @@ export async function createUser(
   if (!input.email || !input.email.endsWith("@g.batstate-u.edu.ph")) {
     return { success: false, error: "Only @g.batstate-u.edu.ph email addresses are allowed." };
   }
+  // A STUDENT's email must BE their SR code — same rule the registration page
+  // enforces. The department used to be able to create a student whose email
+  // and SR code disagreed, which then failed to sign in / matched the wrong
+  // records later.
   const studentSrCode = input.srCode?.trim() ?? "";
   if (input.role === "student") {
     if (!studentSrCode) {
@@ -223,6 +231,11 @@ export async function createUser(
   if (!ROLES.includes(input.role)) {
     return { success: false, error: "Invalid role specified." };
   }
+
+  // Use the admin (service-role) client so the DEPARTMENT can create the user
+  // with a password of their choosing. The account is created ALREADY
+  // CONFIRMED (email_confirm: true) — no confirmation email is sent and the
+  // user can sign in immediately with the password the department set.
   const admin = createAdminClient();
   if (!admin) {
     return {
@@ -232,6 +245,8 @@ export async function createUser(
     };
   }
 
+  // Single-active-role rule: if the role can have only one active account and
+  // one already exists, this new account is created INACTIVE (never rejected).
   const email = input.email.toLowerCase().trim();
   const role = input.role;
   const requestedActive = input.isActive ?? true;
@@ -258,6 +273,8 @@ export async function createUser(
       last_name: input.lastName.trim(),
       middle_initial: input.middleInitial?.trim() || null,
       suffix: input.suffix?.trim() || null,
+      // NULL (not "") when absent: profiles.sr_code is UNIQUE, and multiple
+      // empty strings would collide (Postgres allows many NULLs, one "").
       sr_code: (input.srCode && input.srCode.trim()) || null,
       role,
     },
@@ -279,6 +296,13 @@ export async function createUser(
   if (!userId) {
     return { success: false, error: "Failed to create user." };
   }
+
+  // Ensure the public.profiles row ALWAYS exists with the correct data. The
+  // handle_new_user trigger (039) normally creates it from raw_user_meta_data,
+  // but that isn't reliable for admin-created / forced-inactive accounts — so
+  // we upsert it explicitly with the service-role client (bypasses RLS).
+  // If the write FAILS we roll the auth user back and surface the real error,
+  // so we never leave an account with no profile (and the department sees why).
   const { error: profErr } = await admin.from("profiles").upsert(
     {
       id: userId,
@@ -287,6 +311,7 @@ export async function createUser(
       last_name: input.lastName.trim(),
       middle_initial: input.middleInitial?.trim() || null,
       suffix: input.suffix?.trim() || null,
+      // NULL (not "") when absent — profiles.sr_code is UNIQUE.
       sr_code: (input.srCode && input.srCode.trim()) || null,
       role,
       is_active: effectiveActive,
@@ -296,9 +321,11 @@ export async function createUser(
   );
   if (profErr) {
     console.error("[createUser] Failed to ensure profile:", profErr);
+    // Roll back the auth user so we don't leave a broken, profile-less account.
     if (userId) {
       await admin.auth.admin.deleteUser(userId).catch(() => {});
     }
+    // Give the department a clear reason instead of a raw Postgres error.
     const msg = profErr.message || "";
     if (msg.includes("profiles_sr_code_key") || msg.toLowerCase().includes("sr_code")) {
       return {
@@ -312,6 +339,13 @@ export async function createUser(
     };
   }
 
+  // No confirmation email: the account was created already confirmed
+  // (email_confirm: true), so there is nothing to verify. The previous
+  // admin.auth.resend({ type: "signup" }) call was removed on purpose — it
+  // forced every department-created user through an email-verification step
+  // that the department explicitly asked to skip.
+
+  // Audit trail: an account created from the department console.
   await logAudit({
     action: "account_created",
     entityType: "user",
@@ -346,6 +380,11 @@ export async function updateUser(
     return { success: false, error: "Only department accounts can update users." };
   }
 
+  // A department account cannot edit ITSELF through the admin console. The row
+  // carries its own role + active flag, so self-editing is exactly how an admin
+  // locks themselves out of the console (or silently changes their own
+  // privileges). Backstop for the disabled Edit button in the UI — own details
+  // are edited on the Profile page instead.
   if (userId === user.id) {
     return {
       success: false,
@@ -401,6 +440,8 @@ export async function deleteUser(
     return { success: false, error: "Only department accounts can delete users." };
   }
 
+  // Same self-protection as updateUser: deleting your own account from the
+  // console is an immediate lockout.
   if (userId === user.id) {
     return { success: false, error: "You cannot delete your own account." };
   }
@@ -426,6 +467,16 @@ export async function deleteUser(
   return { success: true, data: null };
 }
 
+// ── Bulk student registration (CSV) ─────────────────────────
+// The department's Users page can create one account at a time; a new intake is
+// dozens of students, so the Students tab accepts a CSV. Students ONLY — the
+// role is not a column, it is the whole point of the sheet.
+//
+// Every row goes through createUser() — the same validation, the same
+// already-confirmed admin.createUser, the same profile insert — so a CSV row can
+// never create something the single-user dialog would have refused. The only
+// extra rules here are batch ones: the SR code shape, deriving the email from
+// the SR code when it is left blank, and refusing duplicates inside one file.
 
 export type BulkStudentInput = {
   /** 1-based CSV line, echoed back so the report can point at the bad row. */
@@ -448,6 +499,7 @@ export type BulkStudentResult = {
   name: string;
   status: "created" | "failed";
   error?: string;
+  /** Present when the password was generated (or supplied) for this row. */
   password?: string;
 };
 
@@ -517,6 +569,7 @@ export async function bulkCreateStudents(
       fail("First name and last name are both required.");
       continue;
     }
+    // Same rule as the registration form: the address IS the SR code.
     if (email.split("@")[0] !== srCode.toLowerCase()) {
       fail(`Email must match the SR code (${srCode.toLowerCase()}${ALLOWED_EMAIL_DOMAIN}).`);
       continue;
@@ -560,6 +613,9 @@ export async function bulkCreateStudents(
 
   const createdCount = results.filter((r) => r.status === "created").length;
 
+  // One audit row for the batch (the per-row detail is in the results the
+  // console shows). entityId stays null: the batch is not a single entity, and
+  // pointing it at the ACTOR would read as "this account was changed".
   await logAudit({
     action: "account_created",
     entityType: "user",

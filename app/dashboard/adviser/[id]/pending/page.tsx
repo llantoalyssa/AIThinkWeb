@@ -1,4 +1,20 @@
-
+// ============================================================
+// /dashboard/adviser/[id]/pending — the adviser's Pending TAFs page.
+//
+// The dashboard's "Pending TAFs" counter used to be a dead end: to see WHICH
+// TAFs those were, an adviser had to open each advisory group in turn and look
+// at its submission list. This page is that list, flat, across every group the
+// adviser owns.
+//
+// Data comes from getPendingApprovals(), the same action the approver roles use:
+// it is already scoped to submissions currently routed to this adviser inside
+// groups they own, so nothing extra can leak in. It is gated by
+// `approval.participate` — the permission that puts an account in the approval
+// queue at all — matching the dashboard card it is reached from.
+//
+// Each row opens the adviser's group-scoped viewer (…/group/<slug>/submission/<id>),
+// because the flat /submission/<id> route does not exist for this role.
+// ============================================================
 
 import Link from "next/link";
 import { redirect } from "next/navigation";

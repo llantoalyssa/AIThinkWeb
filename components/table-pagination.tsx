@@ -1,13 +1,26 @@
 'use client'
+
+// ============================================================
+// TablePagination — one shared pager for the department console's tables.
+//
+// The audit trail already pages in the URL server-side; this is for the
+// client-side tables (users, journals, feedback, notifications) so every table
+// in the console behaves the same way and none of them dumps every row at once.
+//
+// The caller owns the page state and clamps it (see the pages: a derived
+// `Math.min(page, totalPages)` instead of resetting in an effect, because
+// set-state-in-effect is an ESLint ERROR in this project).
+// ============================================================
+
 import { ChevronLeft, ChevronRight } from 'lucide-react'
 
 type Props = {
-
+  /** 1-based, already clamped by the caller. */
   page: number
   perPage: number
   total: number
   onChange: (page: number) => void
-
+  /** Singular noun for the count line, e.g. "user" / "entry". */
   label?: string
 }
 
@@ -19,6 +32,8 @@ export default function TablePagination({
   label = 'entry',
 }: Props) {
   const totalPages = Math.max(1, Math.ceil(total / perPage))
+
+  // Nothing to page through — render nothing rather than a dead control.
   if (total <= perPage) return null
 
   const from = (page - 1) * perPage + 1

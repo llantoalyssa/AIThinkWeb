@@ -101,6 +101,8 @@ function mapSubmission(
 }
 
 // ── Get student's TAFs eligible for submission ─────────────────────
+// Returns TAFs that have been analyzed with low_similarity (≤24%).
+// If groupId is provided, excludes TAFs already submitted to that group.
 
 export async function getStudentAvailableTAFs(
   groupId?: string,
@@ -133,6 +135,7 @@ export async function getStudentAvailableTAFs(
     return { success: true, data: [] };
   }
 
+  // If groupId provided, exclude TAFs already submitted to this group
   let excludedTafIds = new Set<string>();
   if (groupId) {
     const { data: existingSubs } = await supabase
@@ -159,6 +162,8 @@ export async function getStudentAvailableTAFs(
     return { success: false, error: "Failed to fetch analysis results." };
   }
 
+  // Build lookup: tafId → eligible versions (below the high-similarity
+  // threshold; see HIGH_SIMILARITY_THRESHOLD)
   const eligibleByTaf = new Map<string, EligibleVersion[]>();
 
   if (analyses) {
@@ -267,8 +272,14 @@ export async function submitTAFToGroup(
   }
 
   // 4. Build the taf_snapshot — prefer the AI-enhanced content (the
-  //    analysis auto-applied improvements)
-
+  //    analysis auto-applied improvements), fall back to the original
+  //    form_fields_snapshot, then to current TAF fields.
+  //
+  // IMPORTANT: the AI enhancement comes back as PLAIN TEXT with newlines.
+  // The draft TAF was written back as HTML via plainTextToHtml (matching
+  // the rich editor). To keep the submitted snapshot consistent (so lists,
+  // line breaks, and numbering survive into the review + PDF export), we
+  // apply the SAME plainTextToHtml conversion here.
   let tafSnapshot: FormFieldsSnapshot;
 
   const enhancement = analysis.enhancement as unknown as
@@ -297,6 +308,8 @@ export async function submitTAFToGroup(
       referenceList: plainTextToHtml(enhancement.improvedReferences) || taf.reference_list || "",
     };
   } else if (analysis.form_fields_snapshot) {
+    // form_fields_snapshot stores the student's drafted HTML intact —
+    // ensure it has block structure so breaks/lists aren't collapsed.
     const ff = analysis.form_fields_snapshot as unknown as Record<string, unknown>;
     tafSnapshot = {
       proposedTitle: (ff.proposedTitle as string) || taf.proposed_title || "",
@@ -414,7 +427,7 @@ export async function getMyGroupSubmissions(
   }
 
   // Fetch ALL submissions in the group (not just the viewer's own) so
-  // every group member can see groups' submitted TAFs.
+  // every group member can see classmates' submitted TAFs.
   const { data, error } = await supabase
     .from("group_taf_submissions")
     .select("*")
@@ -426,6 +439,7 @@ export async function getMyGroupSubmissions(
     return { success: false, error: "Failed to fetch submissions." };
   }
 
+  // Resolve submitter names (FK is to auth.users, not profiles — query+Map).
   const submitterIds = [
     ...new Set((data || []).map((r) => (r as RawSubmission).submitted_by as string)),
   ];
@@ -454,6 +468,22 @@ export async function getMyGroupSubmissions(
 
 // ── Get all submissions for a group (adviser view) ──────────────────
 
+/**
+ * Decides where a submission's notification should open.
+ *
+ * Returns the advisory group's slug when the submission belongs to a group the
+ * CALLER OWNS (so the click can stay inside that group, and Back returns to the
+ * group rather than TAF Submissions), and null otherwise — a plain link in the
+ * approval chain keeps going to the TAF Submissions page.
+ *
+ * Ownership is the only reliable discriminator here: the owner's entry-step
+ * notification has the SAME type as a real adviser's, so the notification type
+ * cannot tell them apart.
+ *
+ * Resolved on CLICK (the notifications page) OR in ONE batch when the
+ * notifications are loaded (the shared bell), so the two surfaces can send the
+ * same notification to the same place — see getOwnedGroupSlugsForSubmissions.
+ */
 export async function getOwnedGroupSlugForSubmission(
   submissionId: string
 ): Promise<{ slug: string | null }> {
@@ -483,6 +513,22 @@ export async function getOwnedGroupSlugForSubmission(
   return { slug: groupSlug(row.name) };
 }
 
+/**
+ * The BATCH form of getOwnedGroupSlugForSubmission: for a list of submissions,
+ * which of them belong to a group the CALLER OWNS → a `submissionId → slug` map.
+ *
+ * WHY IT EXISTS: the notification BELL has to send a notification to the same
+ * destination the notifications PAGE sends it. The page can afford to resolve
+ * ownership on click; the bell cannot (its href builder is synchronous), so the
+ * map is resolved when the notifications are LOADED — one call, two short
+ * queries for the whole list, rather than a join per notification.
+ *
+ * Ownership rule is IDENTICAL to the single-submission resolver above
+ * (`advisory_groups.adviser_id = caller`), so the two surfaces cannot disagree
+ * about which submissions open inside a group. An empty list, an anonymous
+ * caller or a query error all return `{}` — every notification then keeps the
+ * flat destination it has always had.
+ */
 export async function getOwnedGroupSlugsForSubmissions(
   submissionIds: string[],
 ): Promise<Record<string, string>> {
@@ -514,6 +560,9 @@ export async function getOwnedGroupSlugsForSubmissions(
     if (row.group_id) groupIdBySubmission.set(row.id, row.group_id);
   }
   if (groupIdBySubmission.size === 0) return {};
+
+  // Only the groups this caller OWNS come back — the `.eq("adviser_id", ...)`
+  // is the same discriminator the single-submission resolver uses.
   const { data: groups, error: groupsError } = await supabase
     .from("advisory_groups")
     .select("id, name")
@@ -555,6 +604,9 @@ export async function getGroupSubmissions(
 
   const supabase = await createClient();
 
+  // Verify the adviser owns this group. The DEPARTMENT is the exception: it may
+  // act on any TAF, so it may also open any group's submission list (migration
+  // 055 already grants it SELECT on every submission row).
   const isDepartment = user.role === "department";
   const groupQuery = supabase
     .from("advisory_groups")
@@ -621,9 +673,18 @@ export type ApproverStepInfo = {
   status: string | null; // 'approved' | 'rejected' | null (pending)
   note: string | null;
   decidedAt: string | null;
+  /**
+   * The ACCOUNT that decided this step (the `approver_<n>` column). Recorded so
+   * a decision can name who made it rather than only which step it was.
+   */
   actorId: string | null;
   actorName: string | null;
   actorRole: string | null;
+  /**
+   * True when the decider's role is NOT this step's role — a STAND-IN. The
+   * department always acts as a stand-in (it has no level in the chain), and so
+   * does an associate dean / dean approving the entry step of their own group.
+   */
   standIn: boolean;
 };
 
@@ -633,14 +694,32 @@ export type SubmissionWithAnalysis = GroupSubmission & {
   returnedReason: string | null;
   returnedAt: string | null;
   fullyApprovedAt: string | null;
+  /** Decision history per approver step (for the progress tracker). */
   approverSteps: ApproverStepInfo[];
+  /**
+   * The advisory group's owner (their `adviser_id`) and the role they hold.
+   * The owner performs the entry (adviser) step of their own group's TAFs, and
+   * their own role level is skipped, so the review page needs both: the id to
+   * decide whether the viewer may approve, the role to drop the phantom step.
+   */
   groupAdviserId: string | null;
+  /**
+   * Every member of the advisory group, as name PARTS — the official TAF form
+   * lists the PROPONENTS and prints them "Last, First M.", so the name is
+   * formatted at render time rather than here. Names only: the paper form has no
+   * column for SR codes.
+   */
   groupMembers: {
     firstName: string;
     lastName: string;
     middleInitial: string | null;
     suffix: string | null;
   }[];
+  /**
+   * The advisory group is ARCHIVED. Comments/annotations are switched off for
+   * every role in that state (the group is read-only history), and the TAF is out
+   * of the approval queues until the adviser unarchives it.
+   */
   groupArchived: boolean;
   ownerRole: string | null;
   internalScore: number;
@@ -652,6 +731,8 @@ export type SubmissionWithAnalysis = GroupSubmission & {
   researchGapAnalysis: string;
   internalSimilarity: number;
   externalSimilarity: number;
+  /** Complete calculation captured at analysis time (audit trail). Null for
+   *  analyses run before it was stored — the review then omits the card. */
   scoringBreakdown: ScoringBreakdown | null;
 };
 
@@ -677,6 +758,9 @@ export async function getSubmissionById(
     .single();
 
   if (error || !data) {
+    // The row is gone, not "routed": withdrawing a TAF (unsubmit_taf_submission)
+    // DELETES the submission, which leaves older notifications pointing at an id
+    // that no longer exists. Say what actually happened.
     return {
       success: false,
       error:
@@ -684,6 +768,10 @@ export async function getSubmissionById(
     };
   }
 
+  // Fetch group name + owner. The OWNER is the group's entry-level approver:
+  // the associate dean / dean supervise their own groups, so when one of them
+  // owns this group the "adviser" step is theirs, and their own role level is
+  // skipped (see approveSubmission).
   let groupName = '';
   let groupAdviserId: string | null = null;
   let groupArchived = false;
@@ -703,8 +791,18 @@ export async function getSubmissionById(
     groupArchived = g.is_active === false;
   }
 
+  /**
+   * The group's roster, for the exported TAF form's PROPONENTS row. Names only —
+   * the paper form has no SR-code column, and the submitter is already one of
+   * these members.
+   */
   let groupMembers: SubmissionWithAnalysis["groupMembers"] = [];
   {
+    // Service role: `student_group_memberships` only grants SELECT to the
+    // student themselves and the group's own adviser, so through the session
+    // client an approver saw ZERO rows and the PROPONENTS line silently
+    // degraded to the single submitter. The caller has already been authorised
+    // for this submission above; the roster is just display data for the form.
     const admin = createAdminClient();
     const rosterClient = admin ?? supabase;
 
@@ -742,6 +840,8 @@ export async function getSubmissionById(
     }
   }
 
+  // The owner's role, so the review page can (a) let the owner act on their own
+  // group's entry step and (b) drop the level they already hold from the tracker.
   let ownerRole: string | null = null;
   if (groupAdviserId) {
     const { data: ownerProfile } = await supabase
@@ -776,6 +876,7 @@ export async function getSubmissionById(
     scoringBreakdown: null,
   };
 
+  // The roster is only known after the membership read above.
   analysisData.groupMembers = groupMembers;
 
   const { data: analysisRows } = await supabase
@@ -799,6 +900,11 @@ export async function getSubmissionById(
       : null;
   }
 
+  // ── Per-step decision history for the progress tracker ──
+  // The OWNER's own role level is dropped. When an associate dean or dean owns
+  // the group they already sign at the entry (adviser) step, so their role
+  // column would be a phantom step nobody can ever reach — the routing skips it
+  // (see approveSubmission). The entry step is relabelled to name them.
   const stepLabels: Record<number, string> = {
     1: "Adviser",
     2: "Associate Dean",
@@ -810,6 +916,17 @@ export async function getSubmissionById(
 
   const ownerIsEntry = !!ownerRole && ownerRole !== "adviser";
 
+  /**
+   * The entry step's label follows the OWNER'S ROLE, not the word "Owner".
+   *
+   * An associate dean / dean / department account that created a group signs the
+   * entry (adviser) step of that group's TAFs. Showing "Adviser (Owner)" there
+   * described the STEP correctly but the PERSON wrongly — they are not an
+   * adviser — and it made the same TAF's tracker read differently from the
+   * ordinary adviser-owned flow, where that step simply says "Adviser". The role
+   * is what every other surface of the chain names, so it is what the tracker
+   * names too.
+   */
   const OWNER_STEP_LABELS: Record<string, string> = {
     adviser: "Adviser",
     associate_dean: "Associate Dean",
@@ -820,6 +937,10 @@ export async function getSubmissionById(
   const ownerStepLabel =
     OWNER_STEP_LABELS[ownerRole ?? ""] ?? stepLabels[1] ?? "Adviser";
 
+  // WHO decided each step. The `approver_<n>` column names the ACCOUNT that
+  // signed that step — which is not always someone of that step's role (an owner
+  // signs the entry step; the department acts on any step), so their profiles are
+  // resolved to label each decision truthfully and flag the stand-ins.
   const deciderIds = [1, 2, 3, 4]
     .map((n) => (data[`approver_${n}`] as string) || null)
     .filter((v): v is string => !!v);
@@ -865,6 +986,8 @@ export async function getSubmissionById(
         actorId: deciderId,
         actorName: decider?.name ?? null,
         actorRole: decider?.role ?? null,
+        // A stand-in acted in another role's place (department; or an owner on
+        // the entry step). Only meaningful once the step has a decider.
         standIn: !!decider && !!decider.role && decider.role !== stepRole,
       };
     });
@@ -879,6 +1002,8 @@ export async function getSubmissionById(
     approverSteps,
   };
 
+  // Verify access: student must be the submitter, adviser must own the group,
+  // approver roles can only view once the TAF has been routed to them.
   if (user.role === "student") {
     // Any member of the group can view a submitted TAF (classmates can see
     // each other's submissions). Verify membership before allowing access.
@@ -922,6 +1047,21 @@ export async function getSubmissionById(
     user.role === "vcrdes" ||
     user.role === "department"
   ) {
+    // Approver can only view a TAF that is CURRENTLY routed to them
+    // (or fully approved). Once it's returned to the student,
+    // current_approver_role becomes null — the TAF is no longer on
+    // their desk, so it should not be viewable in the submission view.
+    //
+    // EXCEPTION — the group's OWNER. The associate dean and dean supervise
+    // their own advisory groups, so they perform the entry (adviser) step of
+    // those submissions. That step is routed to "adviser", never to their own
+    // role, so a plain role check would lock the owner out of their own
+    // group's TAFs (which is exactly what a submission notification leads to).
+    //
+    // EXCEPTION — the DEPARTMENT. It is the OPTIONAL approver: it has no level
+    // in the chain, so no step is ever routed to "department" and a role check
+    // would lock it out of every TAF it is allowed to act on. It may open any
+    // submission.
     const { data: ownerRow } = await supabase
       .from("advisory_groups")
       .select("adviser_id")

@@ -40,21 +40,24 @@ import {
 import { toast } from "sonner";
 import ConfirmDeleteModal from "@/components/ui/confirm-delete-modal";
 import TablePagination from "@/components/table-pagination";
+
+// ── Types ──────────────────────────────────────────────────
+
 type FileEntry = {
-  id: string;
+  id: string; // temp ID for React key
   file: File;
   status: "pending" | "uploading" | "extracting" | "ocr" | "ai_extracting" | "ready" | "error";
-
+  /** Supabase Storage URL after upload */
   fileUrl?: string;
-
+  /** Extracted text from PDF */
   extractedText?: string;
-
+  /** AI-extracted title */
   title?: string;
-
+  /** AI-extracted authors (raw comma-separated string) */
   authors?: string;
-
+  /** User-provided year */
   year?: string;
-
+  /** Error message if any */
   error?: string;
 };
 
@@ -65,22 +68,44 @@ export default function DepartmentJournals({
   initialJournals,
   canManage = true,
 }: {
+  /**
+   * Optional server-supplied journal list (bundled into the department
+   * dashboard's single mount action). When given, the mount fetch is skipped
+   * and the table paints immediately; when absent it fetches exactly as before
+   * (including its own error banner).
+   */
   initialJournals?: Journal[];
+  /**
+   * Whether this viewer may CHANGE the library. The department console is the
+   * only role that holds `journals.manage` (it is a department-only permission —
+   * migration 058), so every other account that reaches this list through a
+   * `pages.journals` grant is a READ-ONLY viewer: upload, re-embed, edit and
+   * delete are hidden rather than shown-then-refused. Viewing a PDF is a read,
+   * so it stays. Defaults to true, which is the department's own behaviour.
+   */
   canManage?: boolean;
 } = {}) {
   const [journals, setJournals] = useState<Journal[]>(initialJournals ?? []);
   const [journalsPage, setJournalsPage] = useState(1);
   const [loading, setLoading] = useState(!initialJournals);
   const [error, setError] = useState<string | null>(null);
+
+  // Upload dialog
   const [uploadOpen, setUploadOpen] = useState(false);
   const [files, setFiles] = useState<FileEntry[]>([]);
-  const [year, setYear] = useState("");
+  const [year, setYear] = useState(""); // global year for all files
   const [uploadError, setUploadError] = useState<string | null>(null);
-  const [processing, setProcessing] = useState(false);
+  const [processing, setProcessing] = useState(false); // AI extraction in progress
+
+  // Delete state
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null);
+
+  // Filter state (title / authors / year)
   const [filterText, setFilterText] = useState("");
   const [filterYear, setFilterYear] = useState("");
+
+  // Re-embed state
   const [reembedding, setReembedding] = useState(false);
 
   async function handleReembed() {
@@ -98,7 +123,11 @@ export default function DepartmentJournals({
       toast.error(result.error);
     }
   }
+
+  // Viewer state
   const [viewingJournal, setViewingJournal] = useState<Journal | null>(null);
+
+  // Edit state
   const [editingJournal, setEditingJournal] = useState<Journal | null>(null);
   const [editTitle, setEditTitle] = useState("");
   const [editAuthors, setEditAuthors] = useState("");
@@ -139,8 +168,14 @@ export default function DepartmentJournals({
       setEditError(result.error || "Failed to update journal.");
     }
   }
+
+  // ── Fetch ──────────────────────────────────────────────────
   useEffect(() => {
     let cancelled = false;
+    // A server-supplied list (from the dashboard's bundled mount action) paints
+    // immediately; we still revalidate in the background so anything changed
+    // since the page loaded — including an upload or a delete done here and
+    // then left/returned to — is reflected without the old blocking spinner.
     const supplied = initialJournals !== undefined;
 
     async function load() {
@@ -162,6 +197,8 @@ export default function DepartmentJournals({
     load();
     return () => { cancelled = true; };
   }, [initialJournals]);
+
+  // ── File selection ─────────────────────────────────────────
   function handleFilesSelected(fileList: FileList | null) {
     setUploadError(null);
     if (!fileList) return;
@@ -199,6 +236,8 @@ export default function DepartmentJournals({
   function updateFileYear(id: string, value: string) {
     setFiles(files.map((f) => (f.id === id ? { ...f, year: value } : f)));
   }
+
+  // ── Process: upload + extract text + AI metadata ────────────
   async function handleStartProcessing() {
     setUploadError(null);
     setProcessing(true);
@@ -206,8 +245,14 @@ export default function DepartmentJournals({
     const supabase = await import("@/server/supabase/client").then((m) =>
       m.createClient()
     );
+
+    // Process each file sequentially (to avoid rate limits)
     for (const entry of files.filter((f) => f.status === "pending")) {
       try {
+        // Step 1: Upload to Storage. Keep the object key SHORT — a long original
+        // filename would exceed Supabase Storage's key-length cap and make the
+        // upload fail/hang. Sanitize + truncate to ~60 chars (always keeping
+        // the .pdf extension).
         updateStatus(entry.id, "uploading");
         const sanitized = entry.file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
         const ext = sanitized.toLowerCase().endsWith(".pdf") ? ".pdf" : "";
@@ -226,9 +271,19 @@ export default function DepartmentJournals({
 
         const fileUrl = urlData?.publicUrl || "";
         updateField(entry.id, "fileUrl", fileUrl);
+
+        // Step 2: Extract the text layer PER PAGE (server action; avoids
+        // pdf-parse's worker problems). Per-page is what makes the OCR step
+        // below surgical instead of all-or-nothing.
         updateStatus(entry.id, "extracting");
         const pdfResult = await extractPdfPages(fileUrl);
         const pages: string[] = pdfResult.success ? [...pdfResult.pages] : [];
+
+        // Step 2b: OCR ONLY the pages whose text layer is empty/thin. A mixed
+        // document (some pages scanned, some not) used to lose the scanned ones
+        // entirely, because the old check looked at the WHOLE document's length
+        // and skipped OCR as soon as any page had text. Pages that already
+        // produced text are never OCR'd, so nothing is duplicated.
         if (pdfResult.success && pdfResult.thinPages.length > 0) {
           updateStatus(entry.id, "ocr");
           try {
@@ -238,12 +293,16 @@ export default function DepartmentJournals({
             for (const { page, text } of recognised) {
               if (!text.trim()) continue;
               const current = (pages[page - 1] ?? "").trim();
+              // Keep whatever the text layer did give us, then the OCR: a page
+              // can have a header in text and a scanned body image.
               pages[page - 1] = current ? `${current}\n\n${text}` : text;
             }
           } catch (ocrErr) {
             console.warn("[journal-upload] OCR fallback failed:", ocrErr);
           }
         } else if (!pdfResult.success) {
+          // The PDF itself could not be read server-side: try the document
+          // wholesale so a broken text layer is not a dead end.
           updateStatus(entry.id, "ocr");
           try {
             const recognised = await ocrPdfPages(entry.file);
@@ -262,6 +321,8 @@ export default function DepartmentJournals({
           .trim();
 
         updateField(entry.id, "extractedText", extractedText);
+
+        // Step 3: AI extract title + authors
         if (extractedText.trim().length > 50) {
           updateStatus(entry.id, "ai_extracting");
           const aiResult = await extractJournalMetadata(extractedText);
@@ -269,6 +330,8 @@ export default function DepartmentJournals({
           if (aiResult.success) {
             updateField(entry.id, "title", aiResult.data.title);
             updateField(entry.id, "authors", aiResult.data.authors.join(", "));
+
+            // Log AI cost
             if (aiResult.data.usage) {
               logJournalExtractCost({
                 promptTokens: aiResult.data.usage.promptTokens,
@@ -280,13 +343,13 @@ export default function DepartmentJournals({
               });
             }
           } else {
-
+            // AI failed — use filename as title fallback
             const fallback = entry.file.name.replace(/\.[^.]+$/, "").replace(/[_-]/g, " ");
             updateField(entry.id, "title", fallback);
             updateField(entry.id, "authors", "");
           }
         } else {
-
+          // Not enough text
           const fallback = entry.file.name.replace(/\.[^.]+$/, "").replace(/[_-]/g, " ");
           updateField(entry.id, "title", fallback);
           updateField(entry.id, "authors", "");
@@ -311,6 +374,8 @@ export default function DepartmentJournals({
   function updateField<K extends keyof FileEntry>(id: string, key: K, value: FileEntry[K]) {
     setFiles((prev) => prev.map((f) => (f.id === id ? { ...f, [key]: value } : f)));
   }
+
+  // ── Save confirmed files ───────────────────────────────────
   async function handleSaveAll() {
     const readyFiles = files.filter(
       (f) => f.status === "ready" && f.fileUrl && f.title
@@ -365,6 +430,8 @@ export default function DepartmentJournals({
     setUploadError(null);
     setProcessing(false);
   }
+
+  // ── Delete ──────────────────────────────────────────────────
   function openDeleteConfirm(journalId: string) {
     setDeleteTargetId(journalId);
   }
@@ -385,9 +452,13 @@ export default function DepartmentJournals({
   const deleteTarget = deleteTargetId
     ? journals.find((j) => j.id === deleteTargetId)
     : null;
+
+  // ── Compute state ──────────────────────────────────────────
   const readyCount = files.filter((f) => f.status === "ready").length;
   const pendingCount = files.filter((f) => f.status === "pending").length;
   const errorCount = files.filter((f) => f.status === "error").length;
+
+  // Filtered journals (title / authors / year)
   const filteredJournals = journals.filter((j) => {
     const q = filterText.toLowerCase().trim();
     const matchesText =
@@ -398,6 +469,10 @@ export default function DepartmentJournals({
       !filterYear.trim() || (j.year || "").trim() === filterYear.trim();
     return matchesText && matchesYear;
   });
+
+  // Paginate the FILTERED result. The page is derived/clamped here rather than
+  // reset inside an effect — `react-hooks/set-state-in-effect` is a build-failing
+  // error in this project.
   const journalsTotalPages = Math.max(
     1,
     Math.ceil(filteredJournals.length / JOURNALS_PER_PAGE),
@@ -407,9 +482,11 @@ export default function DepartmentJournals({
     (journalsSafePage - 1) * JOURNALS_PER_PAGE,
     journalsSafePage * JOURNALS_PER_PAGE,
   );
+
+  // ── Render ──────────────────────────────────────────────────
   return (
     <>
-      {}
+      {/* Page header */}
       <div className="mb-6 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
           <h2 className="text-xl sm:text-2xl font-bold text-[#333]">
@@ -450,7 +527,7 @@ export default function DepartmentJournals({
         )}
       </div>
 
-      {}
+      {/* Upload Dialog */}
       <Dialog
         open={uploadOpen}
         onOpenChange={(open) => {
@@ -478,7 +555,7 @@ export default function DepartmentJournals({
               </div>
             )}
 
-            {}
+            {/* File picker */}
             <div className="space-y-2">
               <Label htmlFor="journal-files">
                 PDF Files ({files.length}/{MAX_FILES})
@@ -494,7 +571,7 @@ export default function DepartmentJournals({
               />
             </div>
 
-            {}
+            {/* Year input (global) */}
             {files.length > 0 && (
               <div className="w-40">
                 <Label htmlFor="global-year">Publication Year</Label>
@@ -509,7 +586,7 @@ export default function DepartmentJournals({
               </div>
             )}
 
-            {}
+            {/* Start Processing button */}
             {pendingCount > 0 && !processing && (
               <Button
                 onClick={handleStartProcessing}
@@ -528,7 +605,7 @@ export default function DepartmentJournals({
               </div>
             )}
 
-            {}
+            {/* File preview list */}
             {files.length > 0 && (
               <div className="space-y-3 pt-2">
                 <Label>Files ({files.length})</Label>
@@ -577,7 +654,7 @@ export default function DepartmentJournals({
         </DialogContent>
       </Dialog>
 
-      {}
+      {/* PDF Viewer Dialog */}
       <Dialog
         open={!!viewingJournal}
         onOpenChange={(open) => {
@@ -597,8 +674,8 @@ export default function DepartmentJournals({
                     .join(" • ") || "No metadata"}
                 </DialogDescription>
               </DialogHeader>
-              {
-}
+              {/* Phones get most of the viewport, not a fixed 85vh that pushed
+                  the viewer past the dialog's own max-height. */}
               <div className="min-h-[60vh] flex-1 bg-gray-100 sm:min-h-[85vh]">
                 <iframe
                   src={viewingJournal.fileUrl}
@@ -611,7 +688,7 @@ export default function DepartmentJournals({
         </DialogContent>
       </Dialog>
 
-      {}
+      {/* Table toolbar: filter by title/authors + year */}
       <div className="mb-4 flex flex-col sm:flex-row gap-3">
         <div className="relative flex-1">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
@@ -632,7 +709,7 @@ export default function DepartmentJournals({
         />
       </div>
 
-      {}
+      {/* Journals table */}
       {loading ? (
         <div className="flex items-center justify-center py-20">
           <Loader2 className="h-8 w-8 animate-spin text-[#8B1A1A]" />
@@ -674,8 +751,8 @@ export default function DepartmentJournals({
         </div>
       ) : (
         <div className="rounded-lg border bg-white">
-          {
-}
+          {/* Phones: one card per journal. Six columns forced a sideways scroll
+              where the title, year and actions were never visible together. */}
           <div className="divide-y sm:hidden">
             {pagedJournals.map((journal) => (
               <div key={`m-${journal.id}`} className="px-3 py-3">
@@ -862,7 +939,7 @@ export default function DepartmentJournals({
         </div>
       )}
 
-      {}
+      {/* Edit journal dialog */}
       <Dialog open={!!editingJournal} onOpenChange={(open) => !open && closeEdit()}>
         <DialogContent className="sm:max-w-lg">
           <DialogHeader>
@@ -946,7 +1023,7 @@ export default function DepartmentJournals({
         </DialogContent>
       </Dialog>
 
-      {}
+      {/* Delete confirmation modal */}
       <ConfirmDeleteModal
         open={deleteTargetId !== null}
         onOpenChange={(open) => {
@@ -961,6 +1038,10 @@ export default function DepartmentJournals({
     </>
   );
 }
+
+// ── File preview card component ─────────────────────────────
+// (inside the same file to keep things simple)
+
 function FilePreviewCard({
   entry,
   year,
@@ -1008,7 +1089,7 @@ function FilePreviewCard({
           : "border-gray-200 bg-white"
       }`}
     >
-      {}
+      {/* Header */}
       <div className="flex items-center justify-between mb-2">
         <div className="flex items-center gap-2 min-w-0 max-w-full">
           {statusIcon[entry.status]}
@@ -1043,12 +1124,12 @@ function FilePreviewCard({
         </div>
       </div>
 
-      {}
+      {/* Error message */}
       {entry.error && (
         <p className="text-xs text-red-600 mb-2">{entry.error}</p>
       )}
 
-      {}
+      {/* Editable metadata (only when ready) */}
       {entry.status === "ready" && (
         <div className="space-y-2 mt-2">
           <div>

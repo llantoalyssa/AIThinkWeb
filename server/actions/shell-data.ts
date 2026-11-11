@@ -1,5 +1,18 @@
 "use server";
 
+// ============================================================
+// Shell data — ONE round trip for the pieces a dashboard page
+// needs before it can render.
+//
+// Why this exists: pages used to fire several server actions on
+// mount (getCurrentUser + groups + notifications). Server actions
+// are queued, so three separate calls cost three round trips in
+// sequence — measured as the bulk of the time between a side-nav
+// click and data appearing. Composing them HERE keeps the client to
+// a single request; the queries inside still run in parallel, but
+// server-side where each is a short DB hop rather than a
+// client → server → client cycle.
+// ============================================================
 
 import { getCurrentUser, type CurrentUser } from "./auth";
 import { getStudentJoinedGroups } from "./advisory-groups";
@@ -16,6 +29,8 @@ export type StudentShell =
   | { success: false; error: string };
 
 export async function getStudentShell(): Promise<StudentShell> {
+  // Parallel on the server: one auth check + three queries, instead of three
+  // authenticated round trips from the browser, one after another.
   const [user, groups, notifications] = await Promise.all([
     getCurrentUser(),
     getStudentJoinedGroups(),

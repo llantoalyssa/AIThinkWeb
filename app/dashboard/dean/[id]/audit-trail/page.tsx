@@ -1,3 +1,20 @@
+// ============================================================
+// /dashboard/dean/[id]/audit-trail — READ-ONLY Audit Trail for the dean.
+//
+// Reached by an account the department console granted `pages.audit`: the item
+// appears in this role's side nav (components/approver-sidebar.tsx) and the page
+// opens inside the role's own chrome.
+//
+// A SERVER page, exactly like the department's: paging and filtering live in the
+// URL and the slice is queried on the server, so there is no client fetch and
+// every view is linkable. The table is the SHARED one
+// (components/audit-trail-view.tsx) — the department and the four approver roles
+// render one table, not five copies.
+//
+// READ-ONLY BY CONSTRUCTION: the view has no write control, audit_logs has a
+// SELECT policy only (migration 057 grants it to `pages.audit` and adds no
+// INSERT/UPDATE/DELETE), and getAuditLogs() refuses a caller without the grant.
+// ============================================================
 
 import { redirect } from "next/navigation";
 

@@ -19,6 +19,7 @@ export type TopicAbstractForm = {
   submittedAt: string | null;
   /** Whether this TAF may be deleted (draft/analyzed AND never submitted). */
   canDelete: boolean;
+  /** Latest analysis combined similarity score (0-100), or null if never analyzed. */
   latestScore: number | null;
   adviserFeedback: string | null;
   reviewedBy: string | null;
@@ -154,6 +155,8 @@ export async function getStudentTopicAbstracts(): Promise<TAFListResult> {
     .order("updated_at", { ascending: false });
 
   if (error) {
+    // Fallback: the inner join fails if the student can't read submissions
+    // (or there are none) — fall back to a plain list with no submission info.
     console.warn("getStudentTopicAbstracts inner-join failed, falling back:", error);
     const { data: plain, error: plainErr } = await supabase
       .from("topic_abstract_forms")
@@ -313,6 +316,8 @@ export async function deleteTopicAbstracts(
 
   const supabase = await createClient();
 
+  // Block any TAF that was ever submitted to a group (deleting would destroy
+  // the group submission + approval trail).
   const { data: submitted } = await supabase
     .from("group_taf_submissions")
     .select("taf_id")
@@ -329,6 +334,8 @@ export async function deleteTopicAbstracts(
     };
   }
 
+  // Audit trail needs the titles: the rows are gone right after the delete, so
+  // snapshot what is being removed BEFORE removing it.
   const { data: deletableRows } = await supabase
     .from("topic_abstract_forms")
     .select("id, proposed_title")
@@ -350,6 +357,7 @@ export async function deleteTopicAbstracts(
     return { success: false, error: "Failed to delete the selected forms. Please try again." };
   }
 
+  // Audit trail — one row per deleted TAF, each with its title snapshotted.
   for (const t of deletedTitles) {
     await logAudit({
       action: "taf_deleted",
@@ -378,6 +386,10 @@ export async function deleteTopicAbstract(
 
   const supabase = await createClient();
 
+  // Guard #1: only draft/analyzed (not-yet-submitted) TAFs can be deleted.
+  // Guard #2: even if the form's status is draft/analyzed, if it was ever
+  // submitted to a group, block deletion — deleting it would cascade and
+  // destroy the group submission + approval trail.
   const { data: submitted } = await supabase
     .from("group_taf_submissions")
     .select("id")
@@ -391,6 +403,9 @@ export async function deleteTopicAbstract(
     };
   }
 
+  // Grab the title first — after the DELETE the row is gone and the audit trail
+  // would have nothing human-readable to show. (The BULK delete already logged
+  // each row; this single-delete path logged nothing at all.)
   const { data: doomed } = await supabase
     .from("topic_abstract_forms")
     .select("proposed_title")

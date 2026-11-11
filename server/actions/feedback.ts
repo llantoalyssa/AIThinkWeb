@@ -6,6 +6,10 @@ import { getCurrentUser } from "@/server/actions/auth";
 import { getGrantedPermissions } from "@/server/actions/permissions";
 import { logAudit } from "@/server/audit";
 
+// ============================================================
+// System feedback — any authenticated user can submit a rating +
+// description; the department can view / delete all feedback.
+// ============================================================
 
 export type FeedbackItem = {
   id: string;
@@ -58,9 +62,17 @@ export async function submitFeedback(input: {
     return { success: false, error: "Failed to submit feedback. Please try again." };
   }
 
+  // Notify every ACTIVE department account: feedback is what fills this role's
+  // notification list (it is not in the approval chain, so it gets no routed
+  // TAFs). Best-effort — a notification failure must never fail the user's
+  // feedback. Uses the service-role client because a student has no INSERT
+  // rights on approval_notifications.
   try {
     const admin = createAdminClient();
     if (admin) {
+      // NULL is_active must count as active: `.eq("is_active", true)` excludes
+      // NULL rows, so an account whose flag was never set would silently miss
+      // every notification.
       const { data: deptAccounts } = await admin
         .from("profiles")
         .select("id")
@@ -94,6 +106,8 @@ export async function submitFeedback(input: {
           );
 
         if (notifyErr) {
+          // 23502 / 23514 = NOT NULL / CHECK violation → migration 052 has not
+          // been applied to this project. Surfaced so the cause is obvious.
           console.error(
             "[feedback] department notify failed:",
             notifyErr.code === "23502" || notifyErr.code === "23514"
@@ -117,6 +131,20 @@ export async function submitFeedback(input: {
 export async function listAllFeedback(): Promise<FeedbackListResult> {
   const user = await getCurrentUser();
   if (!user) return { success: false, error: "You must be logged in." };
+
+  // PERMISSION-aware, not role-only. The department keeps exactly the access it
+  // has today — its role shortcut is tested FIRST, so this cannot regress and
+  // costs the department no extra query at all. Every OTHER role is allowed
+  // only when its EFFECTIVE permissions include 'pages.feedback' (override →
+  // role default → false, via the shared reader), which is what lets the one
+  // associate dean the department console granted read this list.
+  //
+  // Deliberately the same test migration 056 puts on the SELECT policy of
+  // public.system_feedback: a caller can never pass this guard and then be
+  // silently filtered to zero rows by RLS, or vice versa.
+  //
+  // Nothing else widens: deleteFeedback below keeps its department-only guard,
+  // and 'feedback.reply' stays a separate permission.
   if (user.role !== "department") {
     const granted = await getGrantedPermissions(user.id);
     if (!granted.includes("pages.feedback")) {

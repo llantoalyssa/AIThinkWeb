@@ -1,4 +1,25 @@
 "use client";
+
+// ============================================================
+// ApproverPageFrame — the chrome for the READ-ONLY page-permission routes
+// (Journals, Audit Trail) of the four non-department roles: adviser,
+// associate dean, dean, vcrdes.
+//
+// WHY A FRAME AND NOT A PAGE: those routes are SERVER pages (the Audit Trail's
+// slice comes from the URL, exactly like the department's), while the side nav
+// must be the SAME permission-aware list the role's dashboard renders. The page
+// supplies the data and the children; this file owns the layout, so the eight
+// routes (four roles x two pages) cannot drift apart the way nav-items.tsx was
+// created to stop.
+//
+// The chrome is the DASHBOARD's chrome on purpose — same header, same
+// ApproverSidebar with approverNavItemsFor() — so moving between the dashboard
+// and a granted page does not change the navigation under the user.
+//
+// It fetches NOTHING: the page already resolved identity + permissions on the
+// server, so there is no client round trip and no spinner before first paint.
+// ============================================================
+
 import { useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import {
@@ -19,6 +40,8 @@ import NotificationBell from "@/components/notification-bell";
 import { UserMenu } from "@/components/user-menu";
 import { rolePath, type UserRole } from "@/lib/constants";
 import { groupSlug } from "@/lib/slug";
+
+/** The roles that can hold a granted `pages.*` item. */
 export type ApproverPageRole = "adviser" | "associate_dean" | "dean" | "vcrdes";
 
 export default function ApproverPageFrame({
@@ -30,19 +53,27 @@ export default function ApproverPageFrame({
 }: {
   role: ApproverPageRole;
   urlUserId: string;
-
+  /** The signed-in account, resolved by the page's server pass. */
   user: CurrentUser;
-
+  /** The EFFECTIVE permission keys — what surfaces/highlights the nav item. */
   permissions: string[];
   children: React.ReactNode;
 }) {
   const router = useRouter();
+  // The URL is the only honest signal for "which item is selected" on a routed
+  // page: these items carry hrefs, not tabs.
   const pathname = usePathname();
   const [sidebarExpanded, setSidebarExpanded] = useState(true);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   const base = `${rolePath(role as UserRole)}/${urlUserId}`;
+
+  // The same permission-aware list the dashboard renders: omitting `activeTab`
+  // is deliberate — these pages are not tab items, so the granted page item
+  // (the only one with no tab) is what highlights.
   const navItems = approverNavItemsFor(role, urlUserId, permissions);
+
+  /** Tab items switch the dashboard tab; routed items navigate to their href. */
   function goTo(item: { tab?: string; href?: string }) {
     if (item.href) {
       router.push(item.href);
@@ -50,10 +81,23 @@ export default function ApproverPageFrame({
     }
     if (item.tab) router.push(`${base}?tab=${item.tab}`);
   }
+
+  /**
+   * The bell's destination builder.
+   *
+   * A notification ABOUT a TAF must open that TAF — not the notifications page
+   * and not a list. It used to short-circuit every adviser click to
+   * /notifications ("the group slug is unknown here"), which is why an adviser
+   * approving from Pending TAFs / Analytics / Journals landed on the wrong page.
+   * The notification carries `group_name`, and `groupSlug()` turns it into the
+   * same slug the server uses.
+   */
   function hrefFor(n: ApprovalNotification): string {
     if (n.submissionId) {
       const slug = n.groupName ? groupSlug(n.groupName) : "";
       const groupScoped = Boolean(slug);
+      // Adviser, associate dean and dean review a TAF inside its group; VCRDES
+      // has no group route, so it keeps the flat review route.
       if (groupScoped && role !== "vcrdes") {
         return `${base}/group/${slug}/submission/${n.submissionId}`;
       }
@@ -66,7 +110,7 @@ export default function ApproverPageFrame({
     ) {
       return `${base}?tab=groups`;
     }
-
+    // No submission to open (group membership, feedback) → the inbox.
     return `${base}/notifications`;
   }
 
@@ -97,7 +141,7 @@ export default function ApproverPageFrame({
       </header>
 
       <div className="flex flex-1 relative">
-        {}
+        {/* Desktop sidebar — the dashboard's own, permission-aware item list */}
         <ApproverSidebar
           expanded={sidebarExpanded}
           items={navItems}
@@ -106,7 +150,7 @@ export default function ApproverPageFrame({
           onToggle={() => setSidebarExpanded((v) => !v)}
         />
 
-        {}
+        {/* Mobile drawer (the desktop aside is hidden below md) */}
         {mobileMenuOpen && (
           <div className="fixed inset-0 z-20 md:hidden">
             <div
@@ -145,6 +189,13 @@ export default function ApproverPageFrame({
     </div>
   );
 }
+
+/**
+ * The notice a hand-typed URL gets when the account does NOT hold the page's
+ * permission. Ungranted is a normal outcome, never an error: RLS and the list
+ * action refuse the data anyway, so the page explains itself and offers the
+ * way back instead of rendering an empty table.
+ */
 export function ApproverNoAccess({
   title,
   message,

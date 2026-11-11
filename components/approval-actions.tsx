@@ -1,4 +1,15 @@
 "use client";
+
+// ============================================================
+// ApprovalActions — Approve + Return-for-revision buttons for a
+// submission, used on the adviser submission detail page.
+//
+// Approval is a FIXED cycle (no route picker):
+//   Student → Adviser → Associate Dean → Dean → VCRDES → done.
+// Approving here simply routes the TAF to the next approver;
+// returning sends it back to the student for revision.
+// ============================================================
+
 import { useState } from "react";
 import {
   approveSubmission,
@@ -77,7 +88,7 @@ export default function ApprovalActions({
         </button>
       </div>
 
-      {}
+      {/* ── Return dialog ──────────────────────────────────── */}
       {showReturnDialog && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div

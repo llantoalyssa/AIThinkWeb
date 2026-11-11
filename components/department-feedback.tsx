@@ -1,4 +1,9 @@
 "use client";
+
+// ============================================================
+// DepartmentFeedback — lists feedback from every user.
+// ============================================================
+
 import { useCallback, useEffect, useState } from "react";
 import {
   listAllFeedback,
@@ -24,7 +29,20 @@ export default function DepartmentFeedback({
   initialItems,
   canDelete = true,
 }: {
+  /**
+   * Optional server-supplied feedback list (bundled into the department
+   * dashboard's single mount action). When given, the mount fetch is skipped
+   * and the list paints immediately; when absent it fetches exactly as before
+   * (including the error toast on failure).
+   */
   initialItems?: FeedbackItem[];
+  /**
+   * Whether to render the per-item Delete control. Only the DEPARTMENT may
+   * delete (see deleteFeedback), so a viewer that reaches this list through the
+   * pages.feedback grant passes false instead of being shown a button that is
+   * guaranteed to fail. Defaults to true, so the department dashboard renders
+   * exactly as it always has.
+   */
   canDelete?: boolean;
 } = {}) {
   const [items, setItems] = useState<FeedbackItem[]>(initialItems ?? []);
@@ -34,6 +52,10 @@ export default function DepartmentFeedback({
 
   useEffect(() => {
     let cancelled = false;
+    // A server-supplied list (from the dashboard's bundled mount action) paints
+    // immediately; we still revalidate in the background so a delete made here
+    // and then left/returned to is not resurrected, without the blocking
+    // spinner. The error toast stays reserved for the unsupplied path.
     const supplied = initialItems !== undefined;
     async function load() {
       const res = await listAllFeedback();
@@ -67,6 +89,9 @@ export default function DepartmentFeedback({
   const counts = [1, 2, 3, 4, 5].map(
     (n) => items.filter((i) => i.rating === n).length,
   );
+  // Derived clamp — never reset the page in an effect (set-state-in-effect is a
+  // build-failing lint error here). A delete that empties the last page just
+  // falls back to the new last page on the next render.
   const totalPages = Math.max(1, Math.ceil(items.length / FEEDBACK_PER_PAGE));
   const safePage = Math.min(feedbackPage, totalPages);
   const pagedItems = items.slice(
@@ -76,7 +101,7 @@ export default function DepartmentFeedback({
 
   return (
     <div className="space-y-6">
-      {}
+      {/* Summary */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
         <div className="rounded-xl border border-gray-200 bg-white p-4">
           <p className="text-xs text-gray-500">Total feedback</p>

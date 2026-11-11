@@ -1,4 +1,13 @@
 "use client";
+
+// ============================================================
+// AnnotationLayer — provider for Google-Docs-style comments on a
+// submitted TAF. Wraps children in an AnnotationContext so the
+// document can render snippet highlights, detects text
+// selections inside `[data-annotate]` elements and shows an
+// "Add comment" popover, and hosts the AnnotationPanel.
+// ============================================================
+
 import {
   createContext,
   useCallback,
@@ -26,34 +35,40 @@ import { Loader2, X, Send } from "lucide-react";
 
 type AnnotationContextValue = {
   annotations: Annotation[];
-
+  /** comments visible for a given section */
   forField: (fieldKey: AnnotationFieldKey) => Annotation[];
-
+  /** create a comment anchored to the highlighted snippet */
   addComment: (
     fieldKey: AnnotationFieldKey,
     snippet: string,
     comment: string,
   ) => Promise<boolean>;
-
+  /** reply to a thread root */
   reply: (threadId: string, comment: string) => Promise<boolean>;
-
+  /** resolve / reopen a thread */
   resolveThread: (threadId: string, resolved: boolean) => Promise<void>;
-
+  /** edit an annotation or reply (author only) */
   editComment: (annotationId: string, comment: string) => Promise<boolean>;
-
+  /** delete an annotation or reply (author only) */
   deleteComment: (annotationId: string) => Promise<boolean>;
-
+  /** jump/scroll to a section in the document */
   jumpToField: (fieldKey: AnnotationFieldKey) => void;
-
+  /** jump/scroll to a section and flash the exact highlighted snippet */
   jumpToThread: (thread: Annotation) => void;
-
+  /** the current user id (for resolve authorization) */
   currentUserId: string | null;
+  /**
+   * Whether text selection should show the "Add comment" bubble.
+   * Approvers (read-only) always have this on. The student's EDITABLE
+   * view keeps it OFF by default so selecting text to format doesn't
+   * hijack the toolbar; they toggle "Comment mode" on to annotate.
+   */
   commentMode: boolean;
-
+  /** enable/disable comment-on-selection for this viewer */
   setCommentMode: (on: boolean) => void;
-
+  /** whether this user may view comment threads (participants + group members) */
   canView: boolean;
-
+  /** whether this user may add/edit/delete comments (participants only) */
   canAnnotate: boolean;
 };
 
@@ -76,8 +91,21 @@ export default function AnnotationLayer({
 }: {
   submissionId: string;
   children: React.ReactNode;
+  /** Default comment-on-selection state. Pass false for the student's
+   *  editable view so formatting doesn't trigger the comment bubble. */
   enableCommentMode?: boolean;
+  /**
+   * Render the collapsible comments panel (the floating "Comments" button).
+   * Pass false for a role that must not annotate at all — the DEPARTMENT, which
+   * reviews TAFs but does not take part in the comment thread the adviser /
+   * approvers / group members hold.
+   */
   showCommentsPanel?: boolean;
+  /**
+   * Server-supplied threads. When present the mount fetch is skipped, so the
+   * comment badge is already correct on the FIRST paint instead of appearing a
+   * round trip after the TAF opens.
+   */
   initialAnnotations?: Annotation[] | null;
   initialUserId?: string | null;
   initialCanComment?: boolean;
@@ -85,12 +113,22 @@ export default function AnnotationLayer({
   const seeded = useRef(initialAnnotations != null);
   const [annotations, setAnnotations] = useState<Annotation[]>(initialAnnotations ?? []);
   const [currentUserId, setCurrentUserId] = useState<string | null>(initialUserId ?? null);
+  // Author identity for optimistic comments: shown immediately, before the
+  // server round trip (auth + access gate + insert) comes back.
   const [currentUserName, setCurrentUserName] = useState<string | null>(null);
   const [currentUserRole, setCurrentUserRole] = useState<string | null>(null);
+  // Whether the current user may ANNOTATE/COMMENT. Only the submitter and
+  // approvers (adviser + routed approvers) can; other group-member students
+  // viewing the TAF get a read-only view (server enforces this too).
   const [canAnnotate, setCanAnnotate] = useState(initialCanComment ?? false);
+  // Whether the current user may even VIEW the threads. Group-member
+  // students who aren't the submitter can view (canView true) but NOT
+  // annotate (canAnnotate false).
   const [canView, setCanView] = useState(true);
   const [panelOpen, setPanelOpen] = useState(false);
   const [commentMode, setCommentMode] = useState(enableCommentMode);
+
+  // Handler reads the latest mode without re-registering listeners.
   const commentModeRef = useRef(commentMode);
   useEffect(() => {
     commentModeRef.current = commentMode;
@@ -99,11 +137,18 @@ export default function AnnotationLayer({
   useEffect(() => {
     canAnnotateRef.current = canAnnotate;
   }, [canAnnotate]);
+
+  // Selection → comment popover state
   const [pending, setPending] = useState<{
     fieldKey: AnnotationFieldKey;
     snippet: string;
     left: number;
     top: number;
+    /**
+     * Phones get a BOTTOM SHEET instead of a bubble anchored to the selection:
+     * the bubble is 288px wide and its height was never known before layout, so
+     * clamping it to "viewport − 260" cut it off at the bottom on a real phone.
+     */
     mobile: boolean;
   } | null>(null);
   const [draft, setDraft] = useState("");
@@ -118,12 +163,17 @@ export default function AnnotationLayer({
       setCanView(true);
       setCanAnnotate(res.canComment);
     } else {
-
+      // Not a participant and not a group-member student — nothing to see.
       setCanView(false);
       setCanAnnotate(false);
       setAnnotations([]);
     }
   }, [submissionId]);
+
+  // Init: current user + initial load.
+  // Both run in PARALLEL — awaiting the identity first doubled the time before
+  // the comment badge appeared. When the server already sent the threads, only
+  // the identity is still needed.
   useEffect(() => {
     let cancelled = false;
     async function init() {
@@ -151,6 +201,14 @@ export default function AnnotationLayer({
   send: (payload: object) => void;
   remove: () => void;
 } | null>(null);
+
+// ── Realtime: live comment updates ────────────────────────────
+// Uses a BROADCAST channel (not postgres_changes). Broadcast rides the
+// same WebSocket socket but is NOT gated by DB RLS, so a comment saved by
+// ANY participant is reliably reflected to every other open client of this
+// submission (student, adviser, assoc dean, dean, vcrdes) regardless of the
+// annotation table's RLS policy. The author's own client already applies an
+// optimistic update; broadcast refreshes the OTHER clients.
 useEffect(() => {
   const supabase = createClient();
   const channel = supabase
@@ -182,19 +240,43 @@ useEffect(() => {
     channelRef.current = null;
   };
 }, [submissionId, load]);
+
+// ── Jump fallbacks ────────────────────────────────────────────
+//
+// This used to announce "the text this comment was anchored to has changed"
+// whenever a highlight could not be located. That claim was not reliable: a
+// snippet captured from an <input> (the title field), or one that only matches
+// across a normalisation boundary, produces no <mark> even for a comment created
+// seconds earlier — so freshly written comments accused the reader of having
+// edited their own text.
+//
+// A miss is now silent. The section still scrolls into view and flashes, which
+// is the useful part of the interaction. The `annotation-jump-miss` event is
+// still dispatched by the emitters, so an evidence-based check (comparing the
+// stored snapshot against the current field text) can be added there later
+// without touching them.
+
+// Tell every other client viewing this submission to reload their comments.
 function notifyChange() {
   try {
     channelRef.current?.send({});
   } catch {
-
+    // channel not ready — fall back to a local reload
     void load();
   }
 }
+
+  // ── Add comment from selection ─────────────────────────────
   async function addComment(
     fieldKey: AnnotationFieldKey,
     snippet: string,
     comment: string,
   ): Promise<boolean> {
+    // Show the comment IMMEDIATELY. The server action costs ~1-2s (auth +
+    // access gate + insert), and making the user stare at that before their
+    // own comment appeared was the main complaint. A temporary thread goes in
+    // now and is swapped for the real row when the action answers; on failure
+    // it is rolled back, so a rejected comment never lingers.
     const tempId = `temp-${Date.now()}`;
     const optimistic: Annotation = {
       id: tempId,
@@ -219,7 +301,7 @@ function notifyChange() {
       comment,
     });
     if (res.success) {
-
+      // Replace the placeholder with the server's row (real id + timestamp).
       setAnnotations((prev) => prev.map((a) => (a.id === tempId ? res.annotation : a)));
       notifyChange();
       return true;
@@ -232,7 +314,7 @@ function notifyChange() {
   async function reply(threadId: string, comment: string): Promise<boolean> {
     const res = await replyToAnnotation(submissionId, threadId, comment);
     if (res.success) {
-
+      // Optimistic: attach the reply to its thread root locally.
       setAnnotations((prev) =>
         prev.map((a) =>
           a.id === threadId ? { ...a, replies: [...a.replies, res.annotation] } : a,
@@ -258,6 +340,9 @@ function notifyChange() {
       toast.error(res.error);
     }
   }
+
+  // Update an annotation's fields whether it's a thread root or a reply.
+  // (Replies live nested inside their thread root's `replies` array.)
   function patchAnnotation(id: string, patch: Partial<Annotation>) {
     setAnnotations((prev) =>
       prev.map((a) => {
@@ -287,7 +372,7 @@ function notifyChange() {
   async function deleteComment(annotationId: string): Promise<boolean> {
     const res = await deleteAnnotation(submissionId, annotationId);
     if (res.success) {
-
+      // Remove the root and its replies if it's a root; remove a reply otherwise.
       setAnnotations((prev) => {
         const root = prev.find((a) => a.id === annotationId);
         if (root) return prev.filter((a) => a.id !== annotationId);
@@ -304,13 +389,15 @@ function notifyChange() {
   }
 
   function jumpToField(fieldKey: AnnotationFieldKey) {
+    // Dispatch a custom event the document listens to, to scroll to
+    // the section with the matching data-annotate attribute.
     window.dispatchEvent(
       new CustomEvent("annotation-jump", { detail: { fieldKey } }),
     );
   }
 
   function jumpToThread(thread: Annotation) {
-
+    // Jump to the section AND flash just the highlighted snippet.
     window.dispatchEvent(
       new CustomEvent("annotation-jump", {
         detail: { fieldKey: thread.fieldKey, snippet: thread.textSnippet },
@@ -341,14 +428,23 @@ function notifyChange() {
       canView,
       canAnnotate,
     }),
-
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [annotations, forField, currentUserId, submissionId, commentMode, canView, canAnnotate],
   );
+
+  // ── Global selection detection ──────────────────────────────
+  // When the user highlights text inside an element with data-annotate,
+  // pop the "Add comment" bubble anchored near the selection.
   useEffect(() => {
     function handleMouseUp(e: MouseEvent) {
+      // Non-participants (only the submitter + approvers may comment) get a
+      // read-only view — no comment bubble.
       if (!canAnnotateRef.current) return;
-
+      // Comment-on-selection is opt-in for editable views.
       if (!commentModeRef.current) return;
+
+      // Ignore mouseups that happen inside the comment popover (clicking
+      // the textarea / Add button shouldn't dismiss it).
       if (
         popoverRef.current &&
         e.target &&
@@ -362,7 +458,7 @@ function notifyChange() {
         return;
       }
       const text = sel.toString().trim().slice(0, 500);
-
+      // find the annotatable section containing the selection
       let node = sel.anchorNode as Node | null;
       let fieldKey: AnnotationFieldKey | null = null;
       while (node && node !== document.body) {
@@ -391,6 +487,16 @@ function notifyChange() {
         mobile: window.innerWidth < 640,
       });
     }
+
+    /**
+     * TOUCH: a long-press text selection fires no `mouseup` on iOS Safari and
+     * unreliably on Android Chrome, so on a phone the "Add comment" bubble never
+     * appeared — the panel could be opened, but a comment could not be created.
+     * `touchend` (delayed a tick, so the selection is final) and a debounced
+     * `selectionchange` both run the same handler.
+     */
+    // `number` + window.setTimeout: the project's Node types make the bare
+    // setTimeout return a Timeout object, which clearTimeout rejects here.
     let touchTimer: number | undefined;
     function handleTouchEnd(e: TouchEvent) {
       if (
@@ -408,6 +514,8 @@ function notifyChange() {
     document.addEventListener("touchend", handleTouchEnd);
     document.addEventListener("selectionchange", () => {
       const sel = window.getSelection();
+      // Only auto-dismiss when the collapse wasn't caused by focusing the
+      // comment popover itself (which collapses the text selection).
       const focusedInPopover =
         popoverRef.current &&
         document.activeElement &&
@@ -421,8 +529,10 @@ function notifyChange() {
       document.removeEventListener("touchend", handleTouchEnd);
       if (touchTimer) window.clearTimeout(touchTimer);
     };
-
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // ── Jump-to-section handler (scroll + flash) ───────────────
   useEffect(() => {
     function handleJump(e: Event) {
       const fieldKey = (e as CustomEvent).detail?.fieldKey as
@@ -430,6 +540,8 @@ function notifyChange() {
         | undefined;
       const snippet = (e as CustomEvent).detail?.snippet as string | undefined;
       if (!fieldKey) return;
+      // If a specific snippet is targeted, AnnotatedSection handles the
+      // scroll + pulse on the matching mark — let it take over.
       if (snippet) return;
       const target = document.querySelector(
         `[data-annotate="${fieldKey}"]`,
@@ -464,7 +576,7 @@ function notifyChange() {
     <AnnotationContext.Provider value={value}>
       {children}
 
-      {}
+      {/* "Add comment" popover anchored at the selection */}
       {pending && (
         <div
           ref={popoverRef}
@@ -473,6 +585,10 @@ function notifyChange() {
               ? "fixed inset-x-2 bottom-2 z-[60] max-h-[75dvh] overflow-y-auto rounded-xl border border-gray-200 bg-white p-2 shadow-2xl"
               : "fixed z-[60] w-72 rounded-xl border border-gray-200 bg-white p-2 shadow-2xl"
           }
+          /* Desktop keeps the bubble anchored to the selection (clamped to the
+             viewport). A phone uses the bottom sheet above, so no height guess is
+             needed — the bubble's real height was larger than the clamp assumed,
+             which cut off the buttons. */
           style={
             pending.mobile
               ? undefined
@@ -538,9 +654,9 @@ function notifyChange() {
         </div>
       )}
 
-      {
-
-}
+      {/* Comments panel — anyone who can VIEW (submitter, approvers,
+          group-member students). Pass readOnly (= !canAnnotate) so viewers
+          see threads but no composer/reply/resolve/edit/delete. */}
       {canView && showCommentsPanel && (
         <AnnotationPanel
           open={panelOpen}

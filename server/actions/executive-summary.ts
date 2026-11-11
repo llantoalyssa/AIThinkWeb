@@ -1,5 +1,13 @@
 "use server";
 
+// ============================================================
+// Executive Summary — TAF submissions over time for the Dean.
+// Aggregates monthly TAF submission counts by academic year
+// (August → July, Philippine school calendar). Returns a timeline
+// per academic year plus each year's peak and trough submission
+// month, so the Dean dashboard can render This-Year vs Last-Year
+// comparison line charts.
+// ============================================================
 
 import { createClient } from "@/server/supabase/server";
 import { getCurrentUser } from "@/server/actions/auth";
@@ -50,6 +58,9 @@ const MONTH_LABELS = [
   "Feb", "Mar", "Apr", "May", "Jun", "Jul",
 ];
 
+// Academic year starts in August (month index 8). A date in Aug(8)..Dec(12)
+// belongs to the year it started (e.g. Aug 2025 → SY 2025-2026); Jan(1)..Jul(7)
+// belongs to the previous year's academic year.
 function academicStartYear(date: Date): number {
   const m = date.getMonth() + 1; // 1-12
   const y = date.getFullYear();
@@ -77,6 +88,9 @@ function buildSummary(startYear: number, samples: Date[]): AcademicYearSummary {
 
   const total = months.reduce((a, m) => a + m.count, 0);
 
+  // Peak = highest count (earliest wins). Trough = lowest count (earliest wins,
+  // among months with at least 1 submission; zero-months ignored unless the
+  // whole year is empty).
   let peak: MonthPoint | null = null;
   for (const m of months) {
     if (!peak || m.count > peak.count) peak = m;
@@ -104,6 +118,9 @@ export async function getExecutiveSummary(): Promise<ExecutiveSummaryResult> {
   const user = await getCurrentUser();
   if (!user) return { success: false, error: "You must be logged in." };
 
+  // Gated by the PERMISSION (see getResearchAnalytics): the dean holds it by
+  // default and the department console can grant or deny it, which a hardcoded
+  // role list used to make impossible.
   const granted = await getMyGrantedPermissions();
   if (!granted.includes("executive_summary.view")) {
     return {

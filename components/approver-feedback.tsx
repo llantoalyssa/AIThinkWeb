@@ -1,4 +1,22 @@
 "use client";
+
+// ============================================================
+// ApproverFeedbackPage — the shared Feedback list rendered inside an APPROVER's
+// own chrome (associate dean / dean / vcrdes), for an account the department
+// console granted "pages.feedback".
+//
+// WHY A SHARED COMPONENT: the route file only names the role and its id; the
+// shell (header + the role-aware side nav) lives here so the three approver
+// routes cannot drift apart in the way nav-items.tsx was created to stop.
+//
+// The chrome is the DASHBOARD's chrome on purpose — same header, same
+// ApproverSidebar with the same permission-aware item list — so moving between
+// the dashboard and Feedback does not change the navigation under the user.
+//
+// The page does no data fetching of its own: DepartmentFeedback owns the list
+// (and its pagination) and calls the permission-aware listAllFeedback().
+// ============================================================
+
 import { useEffect, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { type CurrentUser } from "@/server/actions/auth";
@@ -18,14 +36,21 @@ export default function ApproverFeedbackPage({
   urlUserId,
   onBack,
 }: {
+  /**
+   * The adviser is included because the department console can grant
+   * `pages.feedback` to an adviser too — without this the granted item could
+   * only ever 404 for that role.
+   */
   role: "adviser" | "associate_dean" | "dean" | "vcrdes";
   urlUserId: string;
-
+  /** Where "back" goes when this page is not reachable (the role's dashboard). */
   onBack: () => void;
 }) {
   const router = useRouter();
   const pathname = usePathname();
   const [user, setUser] = useState<CurrentUser | null>(null);
+  // Seeded by the shell: the nav needs the SAME effective set the dashboard
+  // uses, otherwise the granted Feedback item would vanish on this very page.
   const [permissions, setPermissions] = useState<string[]>([]);
   const [canView, setCanView] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -35,7 +60,7 @@ export default function ApproverFeedbackPage({
   useEffect(() => {
     let cancelled = false;
     async function load() {
-
+      // ONE bundled call — identity + effective permissions.
       const shell = await getApproverFeedbackShell();
       if (cancelled) return;
       if (!shell.success) {
@@ -43,13 +68,15 @@ export default function ApproverFeedbackPage({
         return;
       }
       const u = shell.user;
-
+      // Wrong role, or someone else's id in the URL → their own dashboard.
       if (u.role !== role || (urlUserId && u.id !== urlUserId)) {
         router.replace(`${rolePath(u.role)}/${u.id}`);
         return;
       }
       setUser(u);
       setPermissions(shell.permissions);
+      // Ungranted is a normal outcome (a hand-typed URL): show the notice
+      // instead of an empty list. RLS + the list action refuse it regardless.
       setCanView(shell.canView);
       setLoading(false);
     }
@@ -58,11 +85,18 @@ export default function ApproverFeedbackPage({
       cancelled = true;
     };
   }, [router, role, urlUserId]);
+
+  // Same permission-aware list the dashboard renders. Omitting `activeTab` is
+  // deliberate: this page is not one of the tab items, and the granted page
+  // item (the only item with no tab) is the one that highlights.
   const navItems = approverNavItemsFor(
     role,
     user?.id ?? urlUserId,
     permissions,
   );
+
+  // Both nav surfaces navigate: a tab item → that dashboard tab, a granted page
+  // item → its own route (the href nav-items gave it, re-pointed at this role).
   function goTo(item: { tab?: string; href?: string }) {
     if (item.href) {
       router.push(item.href);
@@ -115,7 +149,7 @@ export default function ApproverFeedbackPage({
       </header>
 
       <div className="flex flex-1 relative">
-        {}
+        {/* Desktop sidebar — the dashboard's own, permission-aware item list */}
         <ApproverSidebar
           expanded={sidebarExpanded}
           items={navItems}
@@ -123,7 +157,7 @@ export default function ApproverFeedbackPage({
           onToggle={() => setSidebarExpanded((v) => !v)}
         />
 
-        {}
+        {/* Mobile drawer */}
         {mobileMenuOpen && (
           <div className="fixed inset-0 z-20 md:hidden">
             <div
@@ -140,6 +174,9 @@ export default function ApproverFeedbackPage({
                       setMobileMenuOpen(false);
                     }}
                     className={`flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm transition-colors ${
+                      /* Must match THIS page, not merely "has a route" —
+                         `!item.tab && item.href` lit every routed item at once
+                         (Journals AND Feedback AND Audit Trail) on mobile. */
                       !!item.href && item.href === pathname
                         ? "bg-[#8B1A1A]/10 text-[#8B1A1A] font-medium"
                         : "text-gray-500 hover:bg-gray-100 hover:text-gray-700"
@@ -165,6 +202,10 @@ export default function ApproverFeedbackPage({
           </div>
 
           {canView ? (
+            // The SAME component the department dashboard renders — one list,
+            // one pagination. Delete is the department's alone (deleteFeedback
+            // is department-only), so a granted viewer is NOT shown a button
+            // that is guaranteed to fail.
             <DepartmentFeedback canDelete={false} />
           ) : (
             <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-gray-200 bg-white py-16 text-center">

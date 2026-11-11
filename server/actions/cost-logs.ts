@@ -35,6 +35,9 @@ export async function getCostLogs(
     return { success: false, error: "You must be logged in." };
   }
 
+  // `pages.cost_logs` (migration 061). The page gate hides the table and RLS
+  // refuses the rows; this is the middle layer, so calling the action directly
+  // is refused with a sentence instead of an empty list.
   const granted = await getMyGrantedPermissions();
   if (!granted.includes("pages.cost_logs")) {
     return {
@@ -109,6 +112,8 @@ export async function getCostLogs(
     id: r.id,
     userId: r.user_id,
     userName: nameMap.get(r.user_id) || "Unknown",
+    // Prefer the snapshotted title (survives TAF/journal deletion);
+    // fall back to the live join, then a generic label.
     tafTitle:
       r.title ||
       titleMap.get(r.taf_id) ||

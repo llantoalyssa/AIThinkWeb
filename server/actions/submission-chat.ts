@@ -24,10 +24,14 @@ export type ChatParticipant = {
   srCode?: string;
 };
 
+/** A conversation between the student and one approver role. */
 export type ChatConversation = {
   role: "adviser" | "associate_dean" | "dean" | "vcrdes";
+  /** Display label, e.g. "Adviser". */
   label: string;
+  /** Whether this counterparty has been routed in (visible to student). */
   available: boolean;
+  /** Unread count for the current user in this conversation. */
   unread: number;
 };
 
@@ -36,9 +40,13 @@ export type GetChatResult =
       success: true;
       data: {
         messages: ChatMessage[];
+        /** The other party in this conversation (never the current user). */
         other: ChatParticipant | null;
+        /** The current user's participant info. */
         me: ChatParticipant;
+        /** True if the submission exists and the user is a participant. */
         submissionId: string;
+        /** Which conversation was loaded. */
         withRole: string;
       };
     }
@@ -71,6 +79,10 @@ function displayName(p: ProfileRow): string {
     .trim() || "User";
 }
 
+// ── Verify the current user is a participant of the submission ─────
+// Participants: the student who submitted, the group adviser, and any
+// approver (associate_dean / dean / vcrdes) the TAF has been routed to.
+// Returns the submission row + a profile row for the given user id.
 async function getSubmissionForParticipant(
   submissionId: string,
   userId: string,
@@ -353,6 +365,8 @@ export async function sendSubmissionChatMessage(
     return { success: false, error: access.error };
   }
 
+  // Determine the conversation role: student picks who to talk to,
+  // approvers always send into their own conversation.
   const isStudent = access.submission.submitted_by === user.id;
   const roleList = ["adviser", "associate_dean", "dean", "vcrdes"];
   let conversationRole = (withRole || "adviser") as string;

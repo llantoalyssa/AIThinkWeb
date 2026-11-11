@@ -28,7 +28,9 @@ export function parseRange(
     value === "all" ||
     value === "custom"
     ? value
-    : "month";
+    : // All time is the default view: a fresh visit should show the college's
+      // whole record, not a window that reads as "nothing happened today".
+      "all";
 }
 
 /** An inclusive calendar-day span, as `YYYY-MM-DD` in Philippine time. */
