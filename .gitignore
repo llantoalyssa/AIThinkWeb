@@ -1,0 +1,61 @@
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# dependencies
+/node_modules
+/.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+# testing
+/coverage
+
+# next.js
+/.next/
+/out/
+
+# production
+/build
+
+# misc
+.DS_Store
+*.pem
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# env files (can opt-in for committing if needed)
+.env*
+
+# vercel
+.vercel
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
+
+# pdf-layout verification build (scripts/verify-pdf-layout.mjs)
+.pdfcheck
+
+# stale build artifacts moved aside when .next goes corrupt (mv .next .next-stale-<ts>)
+/.next-stale-*/
+
+# build-verification output (NEXT_DIST_DIR=.next-build-check)
+/.next-build-check/
+# ...and the same directory moved aside when a build races another one
+# (mv .next-build-check .next-build-check-stale-<ts>). The plain rule above does
+# not match the suffixed name.
+/.next-build-check-stale-*/
+
+# local dev servers started on a spare port with their own dist dir
+/.next-dev*/
+
+# Hermes agent working state (plans, scratch artifacts). Files stay on disk;
+# delete this rule if you want .hermes/plans committed with the repo.
+/.hermes/
