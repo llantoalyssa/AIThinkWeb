@@ -77,9 +77,7 @@ export async function getAllUsers(): Promise<
   if (user.role !== "department") {
     return { success: false, error: "Only department accounts can view all users." };
   }
-
-  const supabase = await createClient();
-
+  const supabase = await createClient();  
   // 1. Fetch all profiles (email now stored directly in profiles)
   const { data: profiles, error: profilesError } = await supabase
     .from("profiles")

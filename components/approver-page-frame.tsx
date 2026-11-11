@@ -18,6 +18,7 @@ import ApproverSidebar, {
 import NotificationBell from "@/components/notification-bell";
 import { UserMenu } from "@/components/user-menu";
 import { rolePath, type UserRole } from "@/lib/constants";
+import { groupSlug } from "@/lib/slug";
 export type ApproverPageRole = "adviser" | "associate_dean" | "dean" | "vcrdes";
 
 export default function ApproverPageFrame({
@@ -50,15 +51,23 @@ export default function ApproverPageFrame({
     if (item.tab) router.push(`${base}?tab=${item.tab}`);
   }
   function hrefFor(n: ApprovalNotification): string {
-    if (role === "adviser") return `${base}/notifications`;
-    if (n.submissionId) return `${base}/submission/${n.submissionId}`;
+    if (n.submissionId) {
+      const slug = n.groupName ? groupSlug(n.groupName) : "";
+      const groupScoped = Boolean(slug);
+      if (groupScoped && role !== "vcrdes") {
+        return `${base}/group/${slug}/submission/${n.submissionId}`;
+      }
+      if (role !== "adviser") return `${base}/submission/${n.submissionId}`;
+    }
+
     if (
       (n.type === "joined_group" || n.type === "left_group") &&
       role !== "vcrdes"
     ) {
       return `${base}?tab=groups`;
     }
-    return `${base}?tab=pending`;
+
+    return `${base}/notifications`;
   }
 
   return (

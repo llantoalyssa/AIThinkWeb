@@ -89,6 +89,7 @@ export type ApproverSubmissionShell =
       success: true;
       user: CurrentUser;
       submission: SubmissionWithAnalysis;
+
       pendingCount: number;
       annotations: Annotation[] | null;
       canComment: boolean;
@@ -96,7 +97,7 @@ export type ApproverSubmissionShell =
     }
   | { success: false; error: string; unauthenticated?: boolean };
 
-export async function getApproverSubmissionShell(
+  export async function getApproverSubmissionShell(
   submissionId: string,
 ): Promise<ApproverSubmissionShell> {
 
@@ -134,7 +135,7 @@ export type ApproverFeedbackShell =
     }
   | { success: false; error: string };
 
-export async function getApproverFeedbackShell(): Promise<ApproverFeedbackShell> {
+  export async function getApproverFeedbackShell(): Promise<ApproverFeedbackShell> {
   const user = await getCurrentUser();
   if (!user) return { success: false, error: "You must be logged in." };
 
@@ -152,12 +153,14 @@ export type ApproverNotificationsShell =
       success: true;
       user: CurrentUser;
       notifications: ApprovalNotification[];
+
       notificationsError: string | null;
       permissions: string[];
     }
   | { success: false; error: string };
 
 export async function getApproverNotificationsShell(): Promise<ApproverNotificationsShell> {
+
   const [user, notifications] = await Promise.all([
     getCurrentUser(),
     getMyNotifications(),
@@ -182,8 +185,7 @@ export type NotificationBellShell =
     }
   | { success: false; error: string };
 
-
-export async function getNotificationBellShell(
+  export async function getNotificationBellShell(
   includeOwnedGroups = false,
 ): Promise<NotificationBellShell> {
   const notifications = await getMyNotifications();
@@ -206,8 +208,7 @@ export type ProfileNavShell =
   | { success: true; user: CurrentUser; permissions: string[] }
   | { success: false; error: string };
 
-
-export async function getProfileNavShell(): Promise<ProfileNavShell> {
+  export async function getProfileNavShell(): Promise<ProfileNavShell> {
   const user = await getCurrentUser();
   if (!user) return { success: false, error: "You must be logged in." };
   return {
@@ -265,12 +266,13 @@ export type ApproverPageShell =
   | {
       success: true;
       user: CurrentUser;
+
       permissions: string[];
     }
+
+
   | { success: false; error: string };
-
-
-export async function getApproverPageShell(): Promise<ApproverPageShell> {
+  export async function getApproverPageShell(): Promise<ApproverPageShell> {
   const user = await getCurrentUser();
   if (!user) return { success: false, error: "You must be logged in." };
 

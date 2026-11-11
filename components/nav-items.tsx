@@ -311,5 +311,7 @@ export function navItemsFor({
       }
     }
   }
-  return role === "department" ? items : sortNavByDepartmentOrder(items, role);
+  return role === "department" || role === "student"
+    ? items
+    : sortNavByDepartmentOrder(items, role);
 }

@@ -187,7 +187,9 @@ export async function notify(
 ) {
   const supabase = await createClient();
   // Resolve the submission's group so notifications can navigate to it.
-  const { data: sub } = await supabase
+  const admin = createAdminClient();
+  const reader = admin ?? supabase;
+  const { data: sub } = await reader
     .from("group_taf_submissions")
     .select("group_id")
     .eq("id", submissionId)
@@ -196,7 +198,7 @@ export async function notify(
 
   let groupName: string | null = null;
   if (groupId) {
-    const { data: g } = await supabase
+    const { data: g } = await reader
       .from("advisory_groups")
       .select("name")
       .eq("id", groupId)
@@ -219,7 +221,6 @@ export async function notify(
 export async function getPendingApprovals(): Promise<ApprovalListResult> {
   const user = await getCurrentUser();
   if (!user) return { success: false, error: "You must be logged in." };
-
 
   const granted = await getMyGrantedPermissions();
   if (!granted.includes("approval.participate")) {
@@ -270,6 +271,7 @@ export async function getPendingApprovals(): Promise<ApprovalListResult> {
   const rows: Record<string, unknown>[] = [
     ...((data || []) as Record<string, unknown>[]),
   ];
+
 
   if (user.role === "associate_dean" || user.role === "dean") {
     const { data: ownGroups } = await supabase
@@ -491,7 +493,6 @@ export async function approveSubmission(
   if (!sub) return { success: false, error: "TAF has been routed." };
 
   // ── The group's owner ──────────────────────────────────
-
   const { data: subGroup } = await supabase
     .from("advisory_groups")
     .select("adviser_id")
@@ -504,7 +505,7 @@ export async function approveSubmission(
   if (!step) {
     return { success: false, error: "This TAF is not awaiting an approval step." };
   }
-
+  
   if (
     step !== user.role &&
     !(step === "adviser" && isOwner) &&
@@ -529,7 +530,6 @@ export async function approveSubmission(
   }
 
   const subRow = sub as unknown as Record<string, unknown>;
-
   // ── Never the same STEP twice ──────────────────────────
 
   const stepNumber = ROLE_STEP[step];
@@ -553,8 +553,6 @@ export async function approveSubmission(
 
   const now = new Date().toISOString();
   const note = (opts?.note || "").trim();
-
-
   const actor = {
     id: user.id,
     name:
@@ -568,8 +566,6 @@ export async function approveSubmission(
   };
   const tafSnapshot = sub.taf_snapshot as Record<string, unknown> | null;
   const entityLabel = (tafSnapshot?.proposedTitle as string) || null;
-
-
   const ownerProfile = await supabase
     .from("profiles")
     .select("first_name, middle_initial, last_name, suffix, sr_code")
@@ -616,7 +612,6 @@ export async function approveSubmission(
     status: "under_review",
     [`approver_${stepNumber}`]: user.id,
   };
-
   if (step === "adviser") {
     update.approval_route = FIXED_CHAIN.slice(1).filter((r) => !skipped.includes(r));
   }
@@ -637,7 +632,6 @@ export async function approveSubmission(
         error: `Failed to record approval: ${updateErr.message || updateErr.details || "RLS or DB error"}.`,
       };
     }
-
 
     await logDecision({
       submissionId,
@@ -688,7 +682,6 @@ export async function approveSubmission(
     };
   }
 
-
   await logDecision({
     submissionId,
     entityLabel,
@@ -718,7 +711,6 @@ export async function approveSubmission(
         nextRole === "adviser"
           ? "the adviser"
           : nextRole.replace("_", " ").toUpperCase();
-
       const title = (entityLabel || "Untitled TAF").trim();
       await notify(
         nextUserId,
@@ -765,7 +757,6 @@ export async function returnSubmission(
 
   if (!sub) return { success: false, error: "STAF has been routed." };
 
-
   const { data: returnGroup } = await supabase
     .from("advisory_groups")
     .select("adviser_id")
@@ -773,7 +764,6 @@ export async function returnSubmission(
     .single();
   const returnOwnerId = (returnGroup?.adviser_id as string) || null;
   const isReturnOwner = !!returnOwnerId && returnOwnerId === user.id;
-
 
   const step = sub.current_approver_role as ApproverRole | null;
   if (!step) {
@@ -1126,6 +1116,20 @@ export async function unsubmitTAF(
       error:
         "You can only unsubmit a TAF that you submitted, and it must not be fully approved yet.",
     };
+  }
+
+  const admin = createAdminClient();
+  if (admin) {
+    const { error: notifErr } = await admin
+      .from("approval_notifications")
+      .delete()
+      .eq("submission_id", submissionId);
+    if (notifErr) {
+      console.error(
+        "[approval-workflow] clearing notifications on unsubmit failed:",
+        notifErr,
+      );
+    }
   }
 
   await logAudit({

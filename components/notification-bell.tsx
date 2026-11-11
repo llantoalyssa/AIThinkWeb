@@ -287,7 +287,7 @@ export default function NotificationBell({
 
           {
 }
-          {!loading && notifs.length > MAX_VISIBLE && (
+          {!loading && (
             <button
               type="button"
               onClick={() => {

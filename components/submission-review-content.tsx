@@ -9,7 +9,7 @@ import AspectScoreBreakdown from "@/components/aspect-score-breakdown";
 import AnnotationLayer from "@/components/annotation-layer";
 import AnnotatedSection from "@/components/annotated-section";
 import AnnotatableRichEditor from "@/components/annotatable-rich-editor";
-import ExportTafForm from "@/components/export-taf-form";
+import TafFormExport from "@/components/taf-form-document";
 import { useAnnotations } from "@/components/annotation-layer";
 import {
   updateSubmittedTafContent,
@@ -300,7 +300,7 @@ export default function SubmissionReviewContent({
       {}
       {submission.status === "approved" && !hideExport && (
         <div className="mb-6 flex justify-end">
-          <ExportTafForm submission={submission} />
+          <TafFormExport submission={submission} />
         </div>
       )}
 

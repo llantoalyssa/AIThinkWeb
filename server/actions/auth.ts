@@ -488,7 +488,6 @@ export async function changePassword(input: {
 
   const supabase = await createClient();
 
- 
   const { data: authNow } = await supabase.auth.getUser();
   const providers = (authNow.user?.app_metadata?.providers as string[] | undefined) ?? [];
   const signInEmail = user.email || authNow.user?.email || "";
@@ -521,7 +520,6 @@ export async function changePassword(input: {
   }
 
   // 2. Set the new password.
- 
   const { error: updateErr } = await supabase.auth.updateUser({
     password: newPassword,
     current_password: currentPassword,

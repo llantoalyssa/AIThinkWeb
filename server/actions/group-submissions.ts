@@ -9,6 +9,7 @@ import { HIGH_SIMILARITY_THRESHOLD, formatName } from "@/lib/constants";
 import type { FormFieldsSnapshot } from "./analyze-taf";
 import type { InternalMatchDisplay, ExternalMatchDisplay, ScoringBreakdown } from "./analyze-taf";
 import { groupSlug } from "@/lib/slug";
+import { createAdminClient } from "@/server/supabase/admin";
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -634,6 +635,12 @@ export type SubmissionWithAnalysis = GroupSubmission & {
   fullyApprovedAt: string | null;
   approverSteps: ApproverStepInfo[];
   groupAdviserId: string | null;
+  groupMembers: {
+    firstName: string;
+    lastName: string;
+    middleInitial: string | null;
+    suffix: string | null;
+  }[];
   groupArchived: boolean;
   ownerRole: string | null;
   internalScore: number;
@@ -670,7 +677,11 @@ export async function getSubmissionById(
     .single();
 
   if (error || !data) {
-    return { success: false, error: "TAF has been routed." };
+    return {
+      success: false,
+      error:
+        "This TAF submission is no longer available — it was withdrawn or resubmitted. Open the advisory group to find the current one.",
+    };
   }
 
   let groupName = '';
@@ -691,6 +702,46 @@ export async function getSubmissionById(
     groupAdviserId = g.adviser_id ?? null;
     groupArchived = g.is_active === false;
   }
+
+  let groupMembers: SubmissionWithAnalysis["groupMembers"] = [];
+  {
+    const admin = createAdminClient();
+    const rosterClient = admin ?? supabase;
+
+    const { data: memberships } = await rosterClient
+      .from("student_group_memberships")
+      .select("student_id, joined_at")
+      .eq("group_id", data.group_id)
+      .order("joined_at", { ascending: true });
+    const memberIds = (memberships || []).map((m) => m.student_id as string);
+    if (memberIds.length > 0) {
+      const { data: profiles } = await rosterClient
+        .from("profiles")
+        .select("id, first_name, middle_initial, last_name, suffix")
+        .in("id", memberIds);
+      const byId = new Map((profiles || []).map((p) => [p.id as string, p]));
+      groupMembers = memberIds.flatMap((id) => {
+        const p = byId.get(id) as
+          | {
+              first_name?: string;
+              middle_initial?: string | null;
+              last_name?: string;
+              suffix?: string | null;
+            }
+          | undefined;
+        if (!p || !p.last_name) return [];
+        return [
+          {
+            firstName: p.first_name ?? "",
+            lastName: p.last_name,
+            middleInitial: p.middle_initial ?? null,
+            suffix: p.suffix ?? null,
+          },
+        ];
+      });
+    }
+  }
+
   let ownerRole: string | null = null;
   if (groupAdviserId) {
     const { data: ownerProfile } = await supabase
@@ -710,6 +761,7 @@ export async function getSubmissionById(
     fullyApprovedAt: null,
     approverSteps: [],
     groupAdviserId,
+    groupMembers: [],
     groupArchived,
     ownerRole,
     internalScore: 0,
@@ -723,6 +775,8 @@ export async function getSubmissionById(
     externalSimilarity: 0,
     scoringBreakdown: null,
   };
+
+  analysisData.groupMembers = groupMembers;
 
   const { data: analysisRows } = await supabase
     .from("taf_analysis_results")
