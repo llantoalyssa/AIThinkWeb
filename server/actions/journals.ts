@@ -10,7 +10,11 @@ import {
 import { getMyGrantedPermissions } from "@/server/actions/permissions";
 import { embedText } from "@/server/analysis/similarity";
 import { logAudit } from "@/server/audit";
+
+
 const PAGE_TEXT_MIN_CHARS = 40;
+
+
 function normalizeExtractedText(text: string): string {
   return text
     .replace(/\u00AD/g, "")
@@ -23,7 +27,7 @@ function normalizeExtractedText(text: string): string {
     .replace(/ﬄ/g, "ffl")
     .replace(/ﬅ/g, "ft")
     .replace(/ﬆ/g, "st")
-
+    // line-end hyphenation: "conclu-\nsion" → "conclusion"
     .replace(/([a-z])-\n([a-z])/g, "$1$2")
     .replace(/[ \t]+\n/g, "\n");
 }
@@ -31,16 +35,21 @@ function normalizeExtractedText(text: string): string {
 export type PdfPagesResult =
   | {
       success: true;
-
+      /** One entry per page, in page order (empty string = no text layer). */
       pages: string[];
-
+      /** 1-based page numbers whose text layer is too thin to trust. */
       thinPages: number[];
     }
   | { success: false; error: string };
+
+/**
+ * PER-PAGE extraction — what the journal upload needs to decide, page by page,
+ * whether to OCR. `extractPdfText` below is the plain-string view of this.
+ */
 export async function extractPdfPages(fileUrl: string): Promise<PdfPagesResult> {
   const supabase = await createClient();
 
-  const storagePath = fileUrl.replace(/^.*\/journals\
+  const storagePath = fileUrl.replace(/^.*\/journals\//, "");
   const { data: fileData, error: downloadError } = await supabase.storage
     .from("journals")
     .download(storagePath);
@@ -93,7 +102,7 @@ export async function extractPdfPages(fileUrl: string): Promise<PdfPagesResult> 
             const height = Math.abs(Number(raw.height) || 0);
             items.push({
               str: raw.str,
-
+              // transform = [a, b, c, d, e, f]: e = x of the origin, f = baseline y.
               x: Number(transform?.[4] ?? 0),
               y: Number(transform?.[5] ?? 0),
               width: Number(raw.width) || 0,
@@ -101,17 +110,21 @@ export async function extractPdfPages(fileUrl: string): Promise<PdfPagesResult> 
               hasEOL: Boolean(raw.hasEOL),
             });
           }
+
+          // Reading order: strips → columns → lines (lib/pdf-layout.ts).
           const layout = layoutPageText(items, viewport.width);
           if (layout.thin) {
-
+            // Counts only — never log document contents.
             console.warn(`[extractPdfText] ${describePage(layout, i)}`);
           }
           pages.push(layout.text);
         } finally {
+          // cleanup() is sync in some builds and a promise in others; never let
+          // it mask the real error.
           try {
             await page.cleanup();
           } catch {
-
+            /* ignore */
           }
         }
       }
@@ -119,12 +132,14 @@ export async function extractPdfPages(fileUrl: string): Promise<PdfPagesResult> 
       try {
         await doc.cleanup();
       } catch {
-
+        /* ignore */
       }
     }
 
     const joined = pages.join("\n\n").replace(/\n{3,}/g, "\n\n").trim();
     const totalChars = joined.length;
+    // Per-document summary, so a "this PDF extracted almost nothing" report can
+    // be answered from the server logs without opening the file.
     console.info(
       `[extractPdfText] ${numPages} page(s) → ${totalChars} chars (${(totalChars / Math.max(numPages, 1)).toFixed(0)}/page)`,
     );
@@ -144,6 +159,7 @@ export async function extractPdfPages(fileUrl: string): Promise<PdfPagesResult> 
     return { success: false, error: "Could not read the PDF." };
   }
 }
+
 export async function extractPdfText(fileUrl: string): Promise<string> {
   const result = await extractPdfPages(fileUrl);
   if (!result.success) return "";
@@ -154,6 +170,9 @@ export async function extractPdfText(fileUrl: string): Promise<string> {
 }
 
 import { getCurrentUser } from "./auth";
+
+// ── Types ──────────────────────────────────────────────────
+
 export type Journal = {
   id: string;
   departmentId: string;
@@ -167,7 +186,7 @@ export type Journal = {
 
 export type SaveJournalInput = {
   title: string;
-  authors: string;
+  authors: string; // comma-separated
   year: string;
   fileUrl: string;
   extractedText: string;
@@ -194,6 +213,8 @@ const SECTION_BOUNDARIES = [
 function extractEmbeddingCore(title: string, fullText: string): string {
   const clean = fullText.replace(/\s+/g, " ").trim();
   if (!clean) return title.trim();
+
+  // Cut at the first section boundary so recommendations etc. are excluded.
   let cutAt = clean.length;
   for (const re of SECTION_BOUNDARIES) {
     const m = clean.match(re);
@@ -201,10 +222,14 @@ function extractEmbeddingCore(title: string, fullText: string): string {
       cutAt = m.index;
     }
   }
-  const core = clean.slice(0, Math.min(cutAt, EMBEDDING_CORE_CHARS)).trim();
 
+  // Keep the head (abstract + early intro) — bounded.
+  const core = clean.slice(0, Math.min(cutAt, EMBEDDING_CORE_CHARS)).trim();
+  // Fall back to the title if we ended up with almost nothing.
   return core.length >= 40 ? core : title.trim();
 }
+
+// ── Helper: build an SBERT embedding for a text string ─────
 async function embedJournalText(text: string): Promise<number[] | null> {
   try {
     return await embedText(text);
@@ -221,7 +246,7 @@ export type JournalView = {
   year: string | null;
   fileUrl: string;
   hasText: boolean;
-
+  /** Plain text for overlap highlighting next to the PDF. */
   extractedText: string;
 };
 
@@ -261,6 +286,9 @@ export async function getJournalById(
     },
   };
 }
+
+// ── Get all journals ───────────────────────────────────────
+
 export async function getAllJournals(): Promise<
   JournalActionResult<Journal[]>
 > {
@@ -269,6 +297,7 @@ export async function getAllJournals(): Promise<
   if (!user) {
     return { success: false, error: "You must be logged in." };
   }
+
   const granted = await getMyGrantedPermissions();
   if (!granted.includes("pages.journals")) {
     return {
@@ -303,6 +332,9 @@ export async function getAllJournals(): Promise<
 
   return { success: true, data: journals };
 }
+
+// ── Save journal (with pre-extracted text + AI metadata) ───
+
 export async function saveJournal(
   input: SaveJournalInput
 ): Promise<JournalActionResult<Journal>> {
@@ -324,6 +356,8 @@ export async function saveJournal(
   }
 
   const supabase = await createClient();
+
+  // ── Save to journals table ───────────────────────────────
   const { data: journal, error: insertError } = await supabase
     .from("journals")
     .insert({
@@ -367,6 +401,8 @@ export async function saveJournal(
 
   return { success: true, data: result };
 }
+
+
 export type UpdateJournalInput = {
   title: string;
   authors: string;
@@ -390,6 +426,8 @@ export async function updateJournal(
   }
 
   const supabase = await createClient();
+
+  // Load existing text so we can recompute the embedding core on title change.
   const { data: existing, error: fetchErr } = await supabase
     .from("journals")
     .select("id, extracted_text, embedding_text")
@@ -419,6 +457,8 @@ export async function updateJournal(
     console.error("Error updating journal:", updateErr);
     return { success: false, error: "Failed to update journal." };
   }
+
+  // Re-embed from the (possibly new) title + abstract core.
   const coreText = extractEmbeddingCore(input.title.trim(), fullText);
   if (coreText.trim().length > 0) {
     const embedding = await embedJournalText(coreText);
@@ -444,12 +484,15 @@ export async function updateJournal(
     },
   };
 }
+
+// ── Log journal AI extraction cost ─────────────────────────
+
 export async function logJournalExtractCost(input: {
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
   journalTitle?: string;
-
+  /** Whatever extractJournalMetadata() reported — the provider that ANSWERED. */
   provider?: "gemini" | "opencode-go";
   model?: string;
 }) {
@@ -457,6 +500,7 @@ export async function logJournalExtractCost(input: {
   if (!user) return;
 
   const supabase = await createClient();
+
   const provider = input.provider ?? resolveAnalysisProvider();
   const model = input.model ?? resolveAnalysisModel();
   const rates = analysisRatePerToken();
@@ -476,6 +520,9 @@ export async function logJournalExtractCost(input: {
     total_cost: totalCost,
   });
 }
+
+// ── Delete journal ─────────────────────────────────────────
+
 export async function deleteJournal(
   journalId: string
 ): Promise<JournalActionResult<null>> {
@@ -498,7 +545,7 @@ export async function deleteJournal(
     .single();
 
   if (journal) {
-    const filePath = (journal as any).file_url.replace(/^.*\/journals\
+    const filePath = (journal as any).file_url.replace(/^.*\/journals\//, "");
     await supabase.storage.from("journals").remove([filePath]);
   }
 
@@ -523,6 +570,8 @@ export async function deleteJournal(
 
   return { success: true, data: null };
 }
+
+
 export async function reembedJournals(): Promise<
   | { success: true; data: { reembedded: number; skipped: number } }
   | { success: false; error: string }
