@@ -128,7 +128,9 @@
     @apply font-sans;
   }
 }
-
+input::-ms-reveal{
+  display:none;
+}
 /* ── Rich text content (TipTap editor + HTML display) ────────────── */
 .rich-text-content {
   font-size: 0.875rem;

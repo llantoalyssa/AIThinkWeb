@@ -2,7 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { updateSession } from "@/server/supabase/middleware";
 import { ROLE_DASHBOARD_ROUTES, roleLandingPath, type UserRole } from "@/lib/constants";
 
-// Define route patterns for each role (with or without user ID)
+
 const ROUTE_PATTERNS = {
   student: ["/dashboard/student"],
   adviser: ["/dashboard/adviser", "/dashboard/adviser/group"],
@@ -12,7 +12,7 @@ const ROUTE_PATTERNS = {
   vcrdes: ["/dashboard/vcrdes", "/dashboard/vcrdes/submission"],
 } as const;
 
-// Auth pages that logged-in users should not access
+
 const AUTH_PAGES = ["/login", "/register", "/discover"];
 
 function redirectWithCookies(
@@ -23,8 +23,7 @@ function redirectWithCookies(
   for (const cookie of supabaseResponse.cookies.getAll()) {
     redirect.cookies.set(cookie);
   }
-  // @supabase/ssr hands these to setAll for refresh responses (v0.10+); they
-  // must survive the redirect too, or a CDN may cache the token.
+
   for (const header of ["cache-control", "expires", "pragma"]) {
     const value = supabaseResponse.headers.get(header);
     if (value) redirect.headers.set(header, value);
@@ -34,6 +33,11 @@ function redirectWithCookies(
 
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
+
+  // ── Registration is DISABLED ────────────────────────────────────────────
+  if (pathname === "/register" || pathname.startsWith("/register/")) {
+    return NextResponse.redirect(new URL("/login", request.url));
+  }
 
   // If Supabase env vars are missing, skip auth checks and let requests through
   if (
@@ -69,6 +73,7 @@ export async function middleware(request: NextRequest) {
     }
   }
 
+
   let userRole: UserRole | null = claimRole;
   let userIsActive = true;
 
@@ -93,6 +98,7 @@ export async function middleware(request: NextRequest) {
     return redirectWithCookies(url, supabaseResponse);
   }
 
+
   if (userId && AUTH_PAGES.includes(pathname)) {
     if (!userRole) {
       const { data: profile } = await supabase
@@ -110,6 +116,7 @@ export async function middleware(request: NextRequest) {
   if (isDashboardRoute) {
     // Not authenticated - redirect to login
     if (!userId) {
+
       console.warn(
         "[middleware] no session for",
         pathname,
@@ -145,6 +152,13 @@ export async function middleware(request: NextRequest) {
       return redirectWithCookies(url, supabaseResponse);
     }
 
+    // ── Canonical user id in the URL ──────────────────────────────────────
+    // /dashboard/<role>/<id>/... must carry the SIGNED-IN user's id. This is
+    // the guard that used to be duplicated inside individual pages
+    // (`if (urlUserId !== currentUser.id) router.replace(...)`), each paying
+    // its own Auth round trip for the privilege. Enforcing it once here covers
+    // every route — including the ones that never had the check — and it
+    // happens before any HTML is generated.
     const segments = pathname.split("/"); // ["", "dashboard", role, id, ...]
     const urlId = segments[3];
     if (urlId && urlId !== userId) {
