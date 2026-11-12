@@ -103,7 +103,15 @@ export async function analyzeWithAI(
   const useGemini = !!geminiKey;
   const baseURL = process.env.DEEPSEEK_BASE_URL || "https://opencode.ai/zen/go/v1";
   const model = resolveAnalysisModel();
-  const MAX_TOKENS = 16000;
+  // A thinking model can burn thousands of tokens before it emits the first
+  // character of JSON. 16k was routinely consumed by the thinking alone, leaving
+  // an empty candidate with finishReason "STOP" — Gemini reports
+  // thoughtsTokenCount: ~600 even for a one-line prompt, and the real TAF prompt
+  // is orders of magnitude bigger.
+  const MAX_TOKENS = 24000;
+  // Gemini Flash accepts far more output; the extra headroom is what lets the
+  // model finish its thinking AND write the JSON in one call.
+  const GEMINI_MAX_OUTPUT = 32768;
 
   type CompletionResult = {
     content: string | null;
@@ -117,7 +125,18 @@ export async function analyzeWithAI(
 
   const runCompletion = async (
     messages: Array<{ role: "system" | "user"; content: string }>,
+    opts: {
+      /** json_object response format. Some OpenAI-compatible gateways answer
+       *  with an EMPTY message when the model cannot honour it, so a retry
+       *  drops it. */
+      jsonMode?: boolean;
+      /** Gemini only: turn the thinking budget off. The retry that runs after an
+       *  empty response uses this so the remaining budget cannot be eaten by
+       *  thoughts a second time. */
+      noThinking?: boolean;
+    } = {},
   ): Promise<CompletionResult> => {
+    const jsonMode = opts.jsonMode ?? true;
     if (useGemini) {
       const system = messages.find((m) => m.role === "system");
       const user = messages.find((m) => m.role === "user");
@@ -125,8 +144,9 @@ export async function analyzeWithAI(
         contents: [{ role: "user", parts: [{ text: user?.content ?? "" }] }],
         generationConfig: {
           temperature: 0.2,
-          maxOutputTokens: MAX_TOKENS,
+          maxOutputTokens: GEMINI_MAX_OUTPUT,
           responseMimeType: "application/json",
+          ...(opts.noThinking ? { thinkingConfig: { thinkingBudget: 0 } } : {}),
         },
       };
       if (system) {
@@ -174,10 +194,17 @@ export async function analyzeWithAI(
       messages,
       temperature: 0.2,
       max_tokens: MAX_TOKENS,
-      response_format: { type: "json_object" },
+      ...(jsonMode ? { response_format: { type: "json_object" as const } } : {}),
     });
+    const message = completion.choices[0]?.message;
+    // Reasoning models put their thinking in `reasoning_content` and the answer
+    // in `content`. When the token budget is consumed by the thinking, `content`
+    // comes back empty while `reasoning_content` still holds the JSON — so it is
+    // a legitimate fallback rather than a lost response.
+    const reasoning = (message as unknown as { reasoning_content?: string })
+      ?.reasoning_content;
     return {
-      content: completion.choices[0]?.message?.content ?? null,
+      content: message?.content || reasoning || null,
       finishReason: completion.choices[0]?.finish_reason ?? null,
       usage: completion.usage
         ? {
@@ -241,6 +268,19 @@ export async function analyzeWithAI(
         ]);
         text = completion.content;
       }
+      if (!text) {
+        console.warn(
+          "[ai-analysis] Still empty — retrying core without json_object format",
+        );
+        completion = await runCompletion(
+          [
+            { role: "system", content: systemPrompt },
+            { role: "user", content: coreCondensedPrompt },
+          ],
+          { jsonMode: false, noThinking: true },
+        );
+        text = completion.content;
+      }
       return { completion, text };
     };
 
@@ -262,6 +302,19 @@ export async function analyzeWithAI(
         ]);
         text = completion.content;
       }
+      if (!text) {
+        console.warn(
+          "[ai-analysis] Still empty — retrying enhancement without json_object format",
+        );
+        completion = await runCompletion(
+          [
+            { role: "system", content: systemPrompt },
+            { role: "user", content: enhCondensedPrompt },
+          ],
+          { jsonMode: false, noThinking: true },
+        );
+        text = completion.content;
+      }
       return { completion, text };
     };
 
@@ -271,21 +324,24 @@ export async function analyzeWithAI(
     const enhCompletion = enhRes.completion;
     const enhText = enhRes.text;
 
-    let coreParsed: Record<string, unknown> | null = null;
-    if (coreText) {
-      try {
-        coreParsed = JSON.parse(coreText) as Record<string, unknown>;
-      } catch (e) {
-        console.error("[ai-analysis] Failed to parse core JSON:", e);
-      }
+    const coreParsed = extractJsonObject(coreText);
+    if (coreText && !coreParsed) {
+      console.error(
+        "[ai-analysis] Failed to parse core JSON (finish_reason:",
+        coreCompletion.finishReason,
+        ") — first 400 chars:",
+        coreText.slice(0, 400),
+      );
     }
 
     if (!coreParsed) {
-      const finishReason = coreCompletion.finishReason;
+      console.warn(
+        "[ai-analysis] Core response unusable (finish_reason:",
+        coreCompletion.finishReason || "unknown",
+        ")",
+      );
       return getFallbackVerdict(
-        `AI returned an empty/invalid response (finish_reason: ${
-          finishReason || "unknown"
-        }). The model may have run out of tokens on reasoning — try again.`,
+        "AI returned an invalid response. The model encountered a token limit. Please try again.",
       );
     }
 
@@ -314,7 +370,7 @@ export async function analyzeWithAI(
 
     if (enhText) {
       try {
-        const enh = JSON.parse(enhText) as Record<string, unknown>;
+        const enh = extractJsonObject(enhText) as Record<string, unknown>;
         if (enh && typeof enh.improvedTitle === "string") {
           enhancement = {
             improvedTitle: enh.improvedTitle as string,
@@ -608,6 +664,44 @@ never lose substance. These apply to EVERY improved* field:
   }
 }`;
 }
+
+/**
+ * Pull a JSON object out of a model reply.
+ *
+ * Even with `response_format: json_object`, a gateway or a reasoning model can
+ * answer with a fenced block (```json … ```) or with a sentence before the
+ * object. `JSON.parse` then fails on perfectly good content, which surfaced as
+ * "AI returned an empty/invalid response".
+ */
+function extractJsonObject(text: string | null): Record<string, unknown> | null {
+  if (!text) return null;
+
+  const trimmed = text.trim();
+  const candidates: string[] = [trimmed];
+
+  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fenced?.[1]) candidates.push(fenced[1].trim());
+
+  const first = trimmed.indexOf("{");
+  const last = trimmed.lastIndexOf("}");
+  if (first !== -1 && last > first) {
+    candidates.push(trimmed.slice(first, last + 1));
+  }
+
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    try {
+      const parsed = JSON.parse(candidate);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>;
+      }
+    } catch {
+      // try the next candidate
+    }
+  }
+  return null;
+}
+
 function getFallbackVerdict(reason?: string): AIVerdict {
   return {
     sdgCategories: ["SDG 9: Industry, Innovation and Infrastructure"],
