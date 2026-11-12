@@ -365,7 +365,7 @@ export default function TopicAbstractFormEditor({ tafId, initialTaf, onBack, onS
   useEffect(() => {
     if (!tafId) return;
     const id = tafId;
-    
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     loadTAF(id);
   }, [tafId, loadTAF]);
 
@@ -842,31 +842,6 @@ export default function TopicAbstractFormEditor({ tafId, initialTaf, onBack, onS
         .join(", ")}`
     : undefined;
 
-  // Detect changes vs the analyzed baseline. When an enhancement was
-  // applied, the baseline is the improved content (the TAF was updated
-  // with it); otherwise compare against the original snapshot.
-  // Both sides are normalized to plain text so HTML vs plain-text
-  // representations of the same content don't falsely flag as changes.
-  const baseline = analysisResult?.enhancement
-    ? {
-        proposedTitle: analysisResult.enhancement.improvedTitle,
-        background: analysisResult.enhancement.improvedBackground,
-        objectives: analysisResult.enhancement.improvedObjectives,
-        literatureReview: analysisResult.enhancement.improvedLiteratureReview,
-        methodology: analysisResult.enhancement.improvedMethodology,
-        referenceList: analysisResult.enhancement.improvedReferences,
-      }
-    : analysisResult?.formFieldsSnapshot;
-  const norm = (v?: string | null) => htmlToText(v || "").trim();
-  const hasChanges = showResults && !!baseline && (
-    norm(fields.proposedTitle) !== norm(baseline.proposedTitle) ||
-    norm(fields.background) !== norm(baseline.background) ||
-    norm(fields.objectives) !== norm(baseline.objectives) ||
-    norm(fields.literatureReview) !== norm(baseline.literatureReview) ||
-    norm(fields.methodology) !== norm(baseline.methodology) ||
-    norm(fields.referenceList) !== norm(baseline.referenceList)
-  );
-
   const statusBadge = (() => {
     const colors: Record<string, string> = {
       draft: "bg-gray-100 text-gray-700 border-gray-300",
@@ -1021,24 +996,6 @@ export default function TopicAbstractFormEditor({ tafId, initialTaf, onBack, onS
               </div>
             </CardContent>
           </Card>
-        </div>
-      )}
-
-      {/* ── Changes detected banner ─────────────────────── */}
-      {/* Hidden once the analysis cap (v5) is reached — re-analysis is no
-          longer possible, so prompting for it would be misleading. */}
-      {hasChanges && !analysisLimitReached && (
-        <div className="flex items-center gap-3 p-4 mb-6 rounded-lg border border-amber-200 bg-amber-50">
-          <BrainCircuit className="h-5 w-5 text-amber-600 shrink-0" />
-          <div className="flex-1">
-            <p className="text-sm font-medium text-amber-800">
-              Changes detected
-            </p>
-            <p className="text-xs text-amber-600">
-              You&apos;ve updated your fields since the last analysis. Re-analyze to
-              get updated results.
-            </p>
-          </div>
         </div>
       )}
 
